@@ -25,7 +25,7 @@ public actor CatalogClient {
     private var listCache: [CatalogModelEntry]?
     private var listCacheExpiresAt: Date?
 
-    public init(apiBase: String = "https://coreai-catalog.nousresearch.com/v1") {
+    public init(apiBase: String = "https://raw.githubusercontent.com/kevinqz/coreai-catalog/main/dist") {
         self.apiBase = URL(string: apiBase)!
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 10
@@ -41,19 +41,29 @@ public actor CatalogClient {
             return cached.entry
         }
 
-        // Fetch
-        guard let url = URL(string: "models/\(id)", relativeTo: apiBase) else { return nil }
+        // Fetch full catalog and find model (catalog is static JSON, not a REST API)
+        guard let url = URL(string: "catalog.json", relativeTo: apiBase) else { return nil }
         guard let (data, response) = try? await session.data(from: url),
               let http = response as? HTTPURLResponse, http.statusCode == 200 else {
             return cache[id]?.entry  // return stale if available
         }
 
-        guard let entry = try? JSONDecoder().decode(CatalogModelEntry.self, from: data) else {
+        // Parse { "models": [...] }
+        let models: [CatalogModelEntry]
+        if let wrapper = try? JSONDecoder().decode(CatalogListResponse.self, from: data) {
+            models = wrapper.models
+        } else if let direct = try? JSONDecoder().decode([CatalogModelEntry].self, from: data) {
+            models = direct
+        } else {
             return cache[id]?.entry
         }
 
-        cache[id] = (entry, Date().addingTimeInterval(cacheTTL))
-        return entry
+        // Cache ALL models from this fetch (populates individual cache entries)
+        for m in models {
+            cache[m.id] = (m, Date().addingTimeInterval(cacheTTL))
+        }
+
+        return cache[id]?.entry
     }
 
     // MARK: - List models
@@ -65,21 +75,13 @@ public actor CatalogClient {
             return cached
         }
 
-        var path = "models"
-        var queryItems: [URLQueryItem] = []
-        if let capability { queryItems.append(URLQueryItem(name: "capability", value: capability)) }
-        if let device { queryItems.append(URLQueryItem(name: "device", value: device)) }
-        if !queryItems.isEmpty {
-            path += "?" + queryItems.map { "\($0.name)=\($0.value ?? "")" }.joined(separator: "&")
-        }
-
-        guard let url = URL(string: path, relativeTo: apiBase),
+        guard let url = URL(string: "catalog.json", relativeTo: apiBase),
               let (data, response) = try? await session.data(from: url),
               let http = response as? HTTPURLResponse, http.statusCode == 200 else {
             return listCache ?? []
         }
 
-        // The API returns { "models": [...] } or just [...]
+        // The catalog returns { "models": [...] }
         let models: [CatalogModelEntry]
         if let wrapper = try? JSONDecoder().decode(CatalogListResponse.self, from: data) {
             models = wrapper.models
@@ -89,12 +91,31 @@ public actor CatalogClient {
             return listCache ?? []
         }
 
+        // Apply client-side filters
+        var filtered = models
+        if let capability {
+            filtered = filtered.filter { $0.capabilities.contains(capability) }
+        }
+        if let device {
+            switch device {
+            case "mac":
+                filtered = filtered.filter { $0.deviceSupport?.mac == true || $0.deviceSupport?.macOnly == true }
+            case "iphone":
+                filtered = filtered.filter { $0.deviceSupport?.iphone == true }
+            case "ipad":
+                filtered = filtered.filter { $0.deviceSupport?.ipad == true }
+            default:
+                break
+            }
+        }
+
+        // Cache the full list (unfiltered only)
         if capability == nil && device == nil {
             listCache = models
             listCacheExpiresAt = Date().addingTimeInterval(cacheTTL)
         }
 
-        return models
+        return filtered
     }
 
     // MARK: - Invalidate
