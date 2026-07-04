@@ -1,0 +1,225 @@
+// CatalogClient.swift — fetches model metadata from the coreai-catalog API.
+//
+// The catalog is the intelligence layer: it knows what models exist, what
+// capabilities they have, where to download them, and what benchmark numbers
+// to show in the UI. We fetch lazily and cache for 5 minutes to avoid hitting
+// the API on every node render.
+//
+// API base: https://coreai-catalog.nousresearch.com/v1
+// (graceful fallback to nil if the API is unreachable — installed models
+//  still work without the catalog.)
+
+import Foundation
+
+public actor CatalogClient {
+
+    public static let shared = CatalogClient()
+
+    // The catalog API. Override for testing.
+    private let apiBase: URL
+    private let session: URLSession
+    private var cache: [String: (entry: CatalogModelEntry, expiresAt: Date)] = [:]
+    private let cacheTTL: TimeInterval = 300  // 5 minutes
+
+    // Bulk list cache (separate from per-model cache).
+    private var listCache: [CatalogModelEntry]?
+    private var listCacheExpiresAt: Date?
+
+    public init(apiBase: String = "https://coreai-catalog.nousresearch.com/v1") {
+        self.apiBase = URL(string: apiBase)!
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 10
+        config.timeoutIntervalForResource = 30
+        self.session = URLSession(configuration: config)
+    }
+
+    // MARK: - Single model
+
+    public func getModel(id: String) async -> CatalogModelEntry? {
+        // Check cache
+        if let cached = cache[id], cached.expiresAt > Date() {
+            return cached.entry
+        }
+
+        // Fetch
+        guard let url = URL(string: "models/\(id)", relativeTo: apiBase) else { return nil }
+        guard let (data, response) = try? await session.data(from: url),
+              let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            return cache[id]?.entry  // return stale if available
+        }
+
+        guard let entry = try? JSONDecoder().decode(CatalogModelEntry.self, from: data) else {
+            return cache[id]?.entry
+        }
+
+        cache[id] = (entry, Date().addingTimeInterval(cacheTTL))
+        return entry
+    }
+
+    // MARK: - List models
+
+    public func listModels(capability: String? = nil, device: String? = nil) async -> [CatalogModelEntry] {
+        // Check bulk cache (only when no filters — filtered queries always fetch fresh)
+        if capability == nil && device == nil,
+           let cached = listCache, let expiresAt = listCacheExpiresAt, expiresAt > Date() {
+            return cached
+        }
+
+        var path = "models"
+        var queryItems: [URLQueryItem] = []
+        if let capability { queryItems.append(URLQueryItem(name: "capability", value: capability)) }
+        if let device { queryItems.append(URLQueryItem(name: "device", value: device)) }
+        if !queryItems.isEmpty {
+            path += "?" + queryItems.map { "\($0.name)=\($0.value ?? "")" }.joined(separator: "&")
+        }
+
+        guard let url = URL(string: path, relativeTo: apiBase),
+              let (data, response) = try? await session.data(from: url),
+              let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            return listCache ?? []
+        }
+
+        // The API returns { "models": [...] } or just [...]
+        let models: [CatalogModelEntry]
+        if let wrapper = try? JSONDecoder().decode(CatalogListResponse.self, from: data) {
+            models = wrapper.models
+        } else if let direct = try? JSONDecoder().decode([CatalogModelEntry].self, from: data) {
+            models = direct
+        } else {
+            return listCache ?? []
+        }
+
+        if capability == nil && device == nil {
+            listCache = models
+            listCacheExpiresAt = Date().addingTimeInterval(cacheTTL)
+        }
+
+        return models
+    }
+
+    // MARK: - Invalidate
+
+    public func invalidate() {
+        cache.removeAll()
+        listCache = nil
+        listCacheExpiresAt = nil
+    }
+}
+
+// MARK: - Catalog model types
+
+public struct CatalogModelEntry: Codable, Sendable, Hashable {
+    public let id: String
+    public let name: String
+    public let family: String?
+    public let capabilities: [String]
+    public let modalities: Modalities?
+    public let size: ModelSize?
+    public let runtime: ModelRuntime?
+    public let deviceSupport: DeviceSupport?
+    public let license: License?
+    public let readinessScore: Int?
+    public let provenance: Provenance?
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, family, capabilities, modalities, size, runtime
+        case deviceSupport = "device_support"
+        case license, readinessScore = "readiness_score"
+        case provenance
+    }
+
+    public struct Modalities: Codable, Sendable, Hashable {
+        public let input: [String]?
+        public let output: [String]?
+    }
+
+    public struct ModelSize: Codable, Sendable, Hashable {
+        public let parameters: String?
+        public let precision: String?
+        public let artifactSize: String?
+
+        enum CodingKeys: String, CodingKey {
+            case parameters, precision
+            case artifactSize = "artifact_size"
+        }
+
+        /// Parse artifact size string like "54.5MB" to a Double in MB.
+        public var sizeInMB: Double? {
+            guard let artifactSize else { return nil }
+            let cleaned = artifactSize
+                .replacingOccurrences(of: "MB", with: "")
+                .replacingOccurrences(of: "GB", with: "")
+                .trimmingCharacters(in: .whitespaces)
+            guard let value = Double(cleaned) else { return nil }
+            return artifactSize.uppercased().contains("GB") ? value * 1024 : value
+        }
+    }
+
+    public struct ModelRuntime: Codable, Sendable, Hashable {
+        public let runtimeName: String?
+        public let runner: String?
+        public let stockRuntime: Bool?
+        public let patchRequired: Bool?
+        public let tokenizerRequired: Bool?
+        public let processorRequired: Bool?
+        public let aotRequired: Bool?
+
+        enum CodingKeys: String, CodingKey {
+            case runtimeName = "runtime_name"
+            case runner
+            case stockRuntime = "stock_runtime"
+            case patchRequired = "patch_required"
+            case tokenizerRequired = "tokenizer_required"
+            case processorRequired = "processor_required"
+            case aotRequired = "aot_required"
+        }
+    }
+
+    public struct DeviceSupport: Codable, Sendable, Hashable {
+        public let iphone: Bool?
+        public let ipad: Bool?  // can be null (unknown)
+        public let mac: Bool?
+        public let macOnly: Bool?
+
+        enum CodingKeys: String, CodingKey {
+            case iphone, ipad, mac
+            case macOnly = "mac_only"
+        }
+    }
+
+    public struct License: Codable, Sendable, Hashable {
+        public let name: String?
+        public let commercialUse: String?
+
+        enum CodingKeys: String, CodingKey {
+            case name
+            case commercialUse = "commercial_use"
+        }
+    }
+
+    public struct Provenance: Codable, Sendable, Hashable {
+        public let huggingface: HuggingFace?
+
+        public struct HuggingFace: Codable, Sendable, Hashable {
+            public let owner: String
+            public let repo: String
+            public let url: String?
+            public let revision: String?
+            public let files: [HFFile]?
+
+            public struct HFFile: Codable, Sendable, Hashable {
+                public let path: String
+                public let sizeBytes: Int?
+
+                enum CodingKeys: String, CodingKey {
+                    case path
+                    case sizeBytes = "size_bytes"
+                }
+            }
+        }
+    }
+}
+
+struct CatalogListResponse: Codable, Sendable {
+    let models: [CatalogModelEntry]
+}

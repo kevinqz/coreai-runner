@@ -1,0 +1,77 @@
+name: Build Runner Binary
+
+on:
+  push:
+    tags: ['v*']
+  pull_request:
+    paths: ['Sources/**', 'Package.swift', 'Package.resolved']
+
+jobs:
+  build:
+    name: Build coreai-runner (arm64 macOS)
+    runs-on: macos-15  # Apple Silicon runner
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode (beta for macOS 27 SDK)
+        run: |
+          # Find the latest Xcode beta that includes macOS 27 SDK
+          # The coreai-kit dependency requires .macOS("27.0")
+          sudo xcode-select -s /Applications/Xcode-beta.app || sudo xcode-select -s /Applications/Xcode_26_beta.app || true
+          xcodebuild -version
+
+      - name: Resolve dependencies
+        run: swift package resolve
+
+      - name: Build (release)
+        run: swift build -c release
+
+      - name: Run tests
+        run: swift test --parallel
+        continue-on-error: true  # Tests need device + models — skip on CI for now
+
+      - name: Strip binary
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          BINARY_PATH=$(swift build -c release --show-bin-path)/coreai-runner
+          strip "$BINARY_PATH"
+          ls -lh "$BINARY_PATH"
+
+      - name: Upload artifact
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/upload-artifact@v4
+        with:
+          name: coreai-runner-arm64-macos
+          path: |
+            .build/release/coreai-runner
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: coreai-runner-arm64-macos
+          path: ./binary
+
+      - name: Generate checksum
+        run: |
+          cd binary
+          shasum -a 256 coreai-runner > coreai-runner-arm64-macos.sha256
+          cat coreai-runner-arm64-macos.sha256
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            binary/coreai-runner
+            binary/coreai-runner-arm64-macos.sha256
+          draft: true
