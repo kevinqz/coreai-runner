@@ -31,6 +31,12 @@ let package = Package(
                 .product(name: "Hummingbird", package: "hummingbird"),
                 .product(name: "HummingbirdCore", package: "hummingbird"),
                 .product(name: "Logging", package: "swift-log"),
+            ],
+            // System frameworks for SAM 3 (CoreAIImageSegmenter) and
+            // FLUX.2 (CoreAIDiffusionPipeline) — both ship with the OS.
+            linkerSettings: [
+                .linkedFramework("CoreAIImageSegmenter"),
+                .linkedFramework("CoreAIDiffusionPipeline"),
             ]
         ),
         .executableTarget(

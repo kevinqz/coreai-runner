@@ -171,9 +171,33 @@ public actor ModelCache {
             })
         }
 
+        if capabilities.contains("promptable-segmentation") {
+            // SAM 3 via CoreAIImageSegmenter (system framework, text-prompt).
+            // The segmenter bundle needs a directory with metadata.json + .aimodel + tokenizer/.
+            // Download via ModelStore, then load from the bundle directory.
+            let url = try await store.download(
+                CoreAIKit.ModelID(
+                    entry.provenance?.huggingface?.owner ?? "",
+                    path: nil),
+                progress: { p in progress?(p.fraction) })
+            return try await SegmenterAdapter(modelID: modelID, bundleDir: url.path)
+        }
+
+        if capabilities.contains("image-generation") {
+            // FLUX.2 / Z-Image via CoreAIDiffusionPipeline (system framework).
+            // Multi-component bundle (TextEncoder + Transformer + VAE + tokenizer).
+            // PipelineDescriptor auto-detects from metadata.json.
+            let url = try await store.download(
+                CoreAIKit.ModelID(
+                    entry.provenance?.huggingface?.owner ?? "",
+                    path: nil),
+                progress: { p in progress?(p.fraction) })
+            return try await DiffusionAdapter(modelID: modelID, bundleDir: url)
+        }
+
         throw CoreAIRunnerError.modelLoadFailed(
             modelID: modelID,
-            detail: "Unsupported capability set: \(capabilities). Supported: monocular-depth, object-detection, instance-segmentation, vision-language."
+            detail: "Unsupported capability set: \(capabilities). Supported: monocular-depth, object-detection, instance-segmentation, vision-language, promptable-segmentation, image-generation."
         )
     }
 }
