@@ -1,0 +1,14 @@
+# Build artifacts
+.build/
+.swiftpm/
+*.xcodeproj
+DerivedData/
+build/
+
+# OS
+.DS_Store
+*.swp
+
+# IDE
+.vscode/
+.idea/
