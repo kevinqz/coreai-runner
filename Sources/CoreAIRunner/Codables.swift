@@ -16,6 +16,18 @@ public struct HealthResponse: Codable, Sendable {
     public let loadedModels: [String]
     public let thermalState: String
 
+    // snake_case wire keys — SotA convention (matches coreai-catalog, ComfyUI,
+    // HF). Swift keeps idiomatic camelCase properties.
+    enum CodingKeys: String, CodingKey {
+        case status, device, chip
+        case memoryTotalGB = "memory_total_gb"
+        case memoryAvailableGB = "memory_available_gb"
+        case macosVersion = "macos_version"
+        case coreaiVersion = "coreai_version"
+        case loadedModels = "loaded_models"
+        case thermalState = "thermal_state"
+    }
+
     public init(
         status: String,
         device: String,
@@ -58,6 +70,14 @@ public struct ModelListResponse: Codable, Sendable {
         public let loaded: Bool
         public let benchmarkMs: Double?
         public let runner: String?
+
+        enum CodingKeys: String, CodingKey {
+            case id, name, family, capability, precision, license, installed, loaded, runner
+            case sizeMB = "size_mb"
+            case commercialUse = "commercial_use"
+            case deviceSupport = "device_support"
+            case benchmarkMs = "benchmark_ms"
+        }
 
         public init(
             id: String,
@@ -107,10 +127,22 @@ public struct PredictRequest: Codable, Sendable {
         public let points: [AdapterInput.PointPrompt]?
         public let boxes: [AdapterInput.BoxPrompt]?
         public let textPrompt: String?
+
+        enum CodingKeys: String, CodingKey {
+            case prompt, temperature, points, boxes
+            case imagePath = "image_path"
+            case maxTokens = "max_tokens"
+            case scoreThreshold = "score_threshold"
+            case textPrompt = "text_prompt"
+        }
     }
 
     public struct PredictOptions: Codable, Sendable {
         public let computeUnit: AdapterInput.ComputeUnitPreference?
+
+        enum CodingKeys: String, CodingKey {
+            case computeUnit = "compute_unit"
+        }
     }
 
     enum CodingKeys: String, CodingKey {
@@ -131,6 +163,12 @@ public struct PredictResponse: Codable, Sendable {
         public let text: String?
         public let detections: [AdapterOutput.DetectionResult]?
         public let maskPaths: [AdapterOutput.MaskResult]?
+
+        enum CodingKeys: String, CodingKey {
+            case kind, text, detections
+            case outputPath = "output_path"
+            case maskPaths = "mask_paths"
+        }
     }
 
     enum CodingKeys: String, CodingKey {
