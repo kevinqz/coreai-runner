@@ -259,7 +259,10 @@ public struct RunnerServer {
 
     private func writeReadyFile() throws {
         let readyPath = socketPath + ".ready"
-        try socketPath.write(toFile: readyPath, atomically: true, encoding: .utf8)
+        // Write the process PID so the Python bridge can verify the process
+        // that created the .ready file is still alive (stale file detection).
+        let pid = ProcessInfo.processInfo.processIdentifier
+        try "\(pid)".write(toFile: readyPath, atomically: true, encoding: .utf8)
     }
 
     private func extractQueryParam(_ query: String?, name: String) -> String? {
