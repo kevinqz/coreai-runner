@@ -2,6 +2,7 @@ name: Build Runner Binary
 
 on:
   push:
+    branches: [main]
     tags: ['v*']
   pull_request:
     paths: ['Sources/**', 'Package.swift', 'Package.resolved']
