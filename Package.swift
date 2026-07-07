@@ -30,6 +30,7 @@ let package = Package(
                 .product(name: "CoreAIKitVision", package: "coreai-kit"),
                 .product(name: "Hummingbird", package: "hummingbird"),
                 .product(name: "HummingbirdCore", package: "hummingbird"),
+                .product(name: "HummingbirdRouter", package: "hummingbird"),
                 .product(name: "Logging", package: "swift-log"),
             ]
             // SAM 3 (CoreAIImageSegmenter) + FLUX.2 (CoreAIDiffusionPipeline) are NOT

@@ -2,10 +2,11 @@
 // These are the Codable structs decoded from / encoded to HTTP request/response bodies.
 
 import Foundation
+import Hummingbird
 
 // MARK: - Health
 
-public struct HealthResponse: Codable, Sendable {
+public struct HealthResponse: ResponseCodable, Sendable {
     public let status: String
     public let device: String
     public let chip: String
@@ -41,7 +42,7 @@ public struct HealthResponse: Codable, Sendable {
 
 // MARK: - Model listing
 
-public struct ModelListResponse: Codable, Sendable {
+public struct ModelListResponse: ResponseCodable, Sendable {
     public let models: [ModelEntry]
 
     public struct ModelEntry: Codable, Sendable {
@@ -107,10 +108,25 @@ public struct PredictRequest: Codable, Sendable {
         public let points: [AdapterInput.PointPrompt]?
         public let boxes: [AdapterInput.BoxPrompt]?
         public let textPrompt: String?
+
+        enum CodingKeys: String, CodingKey {
+            case imagePath = "image_path"
+            case prompt
+            case maxTokens = "max_tokens"
+            case temperature
+            case scoreThreshold = "score_threshold"
+            case points
+            case boxes
+            case textPrompt = "text_prompt"
+        }
     }
 
     public struct PredictOptions: Codable, Sendable {
         public let computeUnit: AdapterInput.ComputeUnitPreference?
+
+        enum CodingKeys: String, CodingKey {
+            case computeUnit = "compute_unit"
+        }
     }
 
     enum CodingKeys: String, CodingKey {
@@ -120,7 +136,7 @@ public struct PredictRequest: Codable, Sendable {
     }
 }
 
-public struct PredictResponse: Codable, Sendable {
+public struct PredictResponse: ResponseCodable, Sendable {
     public let modelID: String
     public let output: PredictOutput
     public let timing: AdapterOutput.Timing
@@ -146,7 +162,7 @@ public struct LoadRequest: Codable, Sendable {
     public let force: Bool?
 }
 
-public struct LoadResponse: Codable, Sendable {
+public struct LoadResponse: ResponseCodable, Sendable {
     public let modelID: String
     public let status: String  // "loaded" | "already_loaded" | "downloading"
     public let sizeMB: Double?
@@ -160,7 +176,7 @@ public struct LoadResponse: Codable, Sendable {
 
 // MARK: - Error response
 
-public struct ErrorResponse: Codable, Sendable {
+public struct ErrorResponse: ResponseCodable, Sendable {
     public let error: ErrorDetail
 
     public struct ErrorDetail: Codable, Sendable {

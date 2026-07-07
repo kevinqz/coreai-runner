@@ -61,8 +61,14 @@ public struct DeviceInfo: Sendable {
             }
         }
         guard result == KERN_SUCCESS else { return 0 }
-        let pageSize = Double(vm_kernel_page_size)
-        let free = Double(vmStats.free_count) * pageSize / 1_073_741_824.0
+        // Use syscall to get page size (concurrency-safe; vm_kernel_page_size
+        // global is flagged non-Sendable under Swift 6 strict concurrency).
+        var pageSize: vm_size_t = 0
+        withUnsafeMutablePointer(to: &pageSize) {
+            host_page_size(mach_host_self(), $0)
+        }
+        let pageSizeDouble = Double(pageSize)
+        let free = Double(vmStats.free_count) * pageSizeDouble / 1_073_741_824.0
         return free
     }
 

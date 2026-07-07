@@ -1,4 +1,4 @@
-// RunnerServer.swift — Hummingbird HTTP server over a Unix domain socket.
+// RunnerServer.swift — Hummingbird 2.x HTTP server over a Unix domain socket.
 //
 // This is the runtime surface: ComfyUI-CoreAI's bridge.py connects here,
 // sends POST /v1/predict, and receives results. The server manages model
@@ -7,13 +7,22 @@
 // The server is designed to be embedded:
 //   - In coreai-runner CLI: Unix socket at /tmp/coreai-runner.sock
 //   - In coreai-server (future): TCP HTTP on 0.0.0.0:PORT + Bonjour
+//
+// Hummingbird 2.x notes:
+//   - Route handlers return `Response` directly (typed explicitly to unify
+//     branches that produce different ResponseGenerator types).
+//   - Use `EditedResponse(status:headers:response:)` to customise status/headers.
+//   - `RouterRequestContext` requires both `coreContext` and `routerContext`.
+//   - `HTTPResponseStatus` → `HTTPResponse.Status` (from HTTPTypes).
 
 import Foundation
 import Hummingbird
 import HummingbirdCore
+import HummingbirdRouter
+import HTTPTypes
 import Logging
 
-public struct RunnerServer {
+public struct RunnerServer: Sendable {
     public let socketPath: String
     public let logger: Logger
 
@@ -54,16 +63,13 @@ public struct RunnerServer {
         // This is how bridge.py knows the socket is listening without polling.
         try? writeReadyFile()
 
-        app.beforeServerStart {
-            self.logger.info("coreai-runner listening on \(self.socketPath)")
+        app.beforeServerStarts { [socketPath = self.socketPath, logger = self.logger] in
+            logger.info("coreai-runner listening on \(socketPath)")
         }
 
-        // Graceful shutdown: clean up socket file
-        let socketPath = self.socketPath
-        app.afterServerShutdown {
-            try? FileManager.default.removeItem(atPath: socketPath)
-            self.logger.info("coreai-runner shut down, socket removed")
-        }
+        // Graceful shutdown is handled by ServiceGroup (SIGTERM/SIGINT).
+        // Hummingbird 2.x removed afterServerShutdown; the socket + ready
+        // files are cleaned up on next start (stale-socket guard above).
 
         try await app.runService()
     }
@@ -71,33 +77,32 @@ public struct RunnerServer {
     // MARK: - Router
 
     private func buildRouter() -> Router<CoreAIRunnerContext> {
-        let router = Router()
+        let router = Router(context: CoreAIRunnerContext.self)
 
         // GET /v1/health — device info, loaded models, thermal state
-        router.get("v1/health") { request, context in
+        router.get("v1/health") { _, _ in
             let info = DeviceInfo.current()
             let loaded = await self.cache.loadedModelIDs()
 
-            let response = HealthResponse(
-                status: "healthy",
-                device: info.deviceName,
-                chip: info.chipName,
-                memoryTotalGB: info.memoryTotalGB,
-                memoryAvailableGB: info.memoryAvailableGB,
-                macosVersion: info.macosVersion,
-                coreaiVersion: info.coreaiVersion,
-                loadedModels: loaded,
-                thermalState: info.thermalState
-            )
-            return try await response.encodeResponse(
+            return try EditedResponse(
                 status: .ok,
                 headers: [.contentType: "application/json"],
-                context: context
+                response: HealthResponse(
+                    status: "healthy",
+                    device: info.deviceName,
+                    chip: info.chipName,
+                    memoryTotalGB: info.memoryTotalGB,
+                    memoryAvailableGB: info.memoryAvailableGB,
+                    macosVersion: info.macosVersion,
+                    coreaiVersion: info.coreaiVersion,
+                    loadedModels: loaded,
+                    thermalState: info.thermalState
+                )
             )
         }
 
         // GET /v1/models — list models (optionally filtered by capability)
-        router.get("v1/models") { request, context in
+        router.get("v1/models") { request, _ in
             let query = request.uri.query
             let capability = self.extractQueryParam(query, name: "capability")
 
@@ -122,61 +127,76 @@ public struct RunnerServer {
                 )
             }
 
-            let response = ModelListResponse(models: modelEntries)
-            return try await response.encodeResponse(
+            return try EditedResponse(
                 status: .ok,
                 headers: [.contentType: "application/json"],
-                context: context
+                response: ModelListResponse(models: modelEntries)
             )
         }
 
         // POST /v1/models/:model_id/load — download + load model
-        router.post("v1/models/:model_id/load") { request, context in
+        router.post("v1/models/:model_id/load") { request, context -> Response in
             guard let modelID = try? context.parameters.require("model_id", as: String.self) else {
-                return try await ErrorResponse(code: "INVALID_INPUT", message: "model_id is required")
-                    .encodeResponse(status: .badRequest, context: context)
+                return try EditedResponse(
+                    status: .badRequest,
+                    headers: [.contentType: "application/json"],
+                    response: ErrorResponse(code: "INVALID_INPUT", message: "model_id is required")
+                ).response(from: request, context: context)
             }
 
             do {
                 _ = try await self.cache.load(modelID)
-                let response = LoadResponse(modelID: modelID, status: "loaded", sizeMB: nil)
-                return try await response.encodeResponse(
+                return try EditedResponse(
                     status: .ok,
                     headers: [.contentType: "application/json"],
-                    context: context
-                )
+                    response: LoadResponse(modelID: modelID, status: "loaded", sizeMB: nil)
+                ).response(from: request, context: context)
             } catch let error as CoreAIRunnerError {
                 let (status, code) = self.mapError(error)
-                return try await ErrorResponse(
-                    code: code, message: error.localizedDescription, modelID: modelID
-                ).encodeResponse(status: status, context: context)
+                return try EditedResponse(
+                    status: status,
+                    headers: [.contentType: "application/json"],
+                    response: ErrorResponse(code: code, message: error.localizedDescription, modelID: modelID)
+                ).response(from: request, context: context)
             } catch {
-                return try await ErrorResponse(
-                    code: "MODEL_LOAD_FAILED", message: "\(error)", modelID: modelID
-                ).encodeResponse(status: .internalServerError, context: context)
+                return try EditedResponse(
+                    status: .internalServerError,
+                    headers: [.contentType: "application/json"],
+                    response: ErrorResponse(code: "MODEL_LOAD_FAILED", message: "\(error)", modelID: modelID)
+                ).response(from: request, context: context)
             }
         }
 
         // POST /v1/models/:model_id/unload — release model from memory
-        router.post("v1/models/:model_id/unload") { request, context in
+        router.post("v1/models/:model_id/unload") { request, context -> Response in
             guard let modelID = try? context.parameters.require("model_id", as: String.self) else {
-                return try await ErrorResponse(code: "INVALID_INPUT", message: "model_id is required")
-                    .encodeResponse(status: .badRequest, context: context)
+                return try EditedResponse(
+                    status: .badRequest,
+                    headers: [.contentType: "application/json"],
+                    response: ErrorResponse(code: "INVALID_INPUT", message: "model_id is required")
+                ).response(from: request, context: context)
             }
             await self.cache.unload(modelID)
-            return try await LoadResponse(modelID: modelID, status: "unloaded", sizeMB: nil)
-                .encodeResponse(status: .ok, context: context)
+            return try EditedResponse(
+                status: .ok,
+                headers: [.contentType: "application/json"],
+                response: LoadResponse(modelID: modelID, status: "unloaded", sizeMB: nil)
+            ).response(from: request, context: context)
         }
 
         // POST /v1/predict — run inference
-        router.post("v1/predict") { request, context in
+        router.post("v1/predict") { request, context -> Response in
             let predictRequest: PredictRequest
             do {
                 predictRequest = try await request.decode(as: PredictRequest.self, context: context)
             } catch {
-                return try await ErrorResponse(
-                    code: "INVALID_INPUT", message: "Cannot decode request body: \(error)"
-                ).encodeResponse(status: .badRequest, context: context)
+                return try EditedResponse(
+                    status: .badRequest,
+                    headers: [.contentType: "application/json"],
+                    response: ErrorResponse(
+                        code: "INVALID_INPUT", message: "Cannot decode request body: \(error)"
+                    )
+                ).response(from: request, context: context)
             }
 
             let modelID = predictRequest.modelID
@@ -204,19 +224,31 @@ public struct RunnerServer {
                         adapter = try await self.cache.load(modelID)
                     } catch let loadError as CoreAIRunnerError {
                         let (status, code) = self.mapError(loadError)
-                        return try await ErrorResponse(
-                            code: code, message: loadError.localizedDescription, modelID: modelID
-                        ).encodeResponse(status: status, context: context)
+                        return try EditedResponse(
+                            status: status,
+                            headers: [.contentType: "application/json"],
+                            response: ErrorResponse(
+                                code: code, message: loadError.localizedDescription, modelID: modelID
+                            )
+                        ).response(from: request, context: context)
                     } catch {
-                        return try await ErrorResponse(
-                            code: "MODEL_LOAD_FAILED", message: "\(error)", modelID: modelID
-                        ).encodeResponse(status: .internalServerError, context: context)
+                        return try EditedResponse(
+                            status: .internalServerError,
+                            headers: [.contentType: "application/json"],
+                            response: ErrorResponse(
+                                code: "MODEL_LOAD_FAILED", message: "\(error)", modelID: modelID
+                            )
+                        ).response(from: request, context: context)
                     }
                 } else {
                     let (status, code) = self.mapError(error)
-                    return try await ErrorResponse(
-                        code: code, message: error.localizedDescription, modelID: modelID
-                    ).encodeResponse(status: status, context: context)
+                    return try EditedResponse(
+                        status: status,
+                        headers: [.contentType: "application/json"],
+                        response: ErrorResponse(
+                            code: code, message: error.localizedDescription, modelID: modelID
+                        )
+                    ).response(from: request, context: context)
                 }
             }
 
@@ -224,31 +256,38 @@ public struct RunnerServer {
             do {
                 let output = try await adapter.predict(input)
 
-                let response = PredictResponse(
-                    modelID: modelID,
-                    output: PredictResponse.PredictOutput(
-                        kind: output.kind.rawValue,
-                        outputPath: output.outputPath,
-                        text: output.text,
-                        detections: output.detections,
-                        maskPaths: output.maskPaths
-                    ),
-                    timing: output.timing
-                )
-                return try await response.encodeResponse(
+                return try EditedResponse(
                     status: .ok,
                     headers: [.contentType: "application/json"],
-                    context: context
-                )
+                    response: PredictResponse(
+                        modelID: modelID,
+                        output: PredictResponse.PredictOutput(
+                            kind: output.kind.rawValue,
+                            outputPath: output.outputPath,
+                            text: output.text,
+                            detections: output.detections,
+                            maskPaths: output.maskPaths
+                        ),
+                        timing: output.timing
+                    )
+                ).response(from: request, context: context)
             } catch let error as CoreAIRunnerError {
                 let (status, code) = self.mapError(error)
-                return try await ErrorResponse(
-                    code: code, message: error.localizedDescription, modelID: modelID
-                ).encodeResponse(status: status, context: context)
+                return try EditedResponse(
+                    status: status,
+                    headers: [.contentType: "application/json"],
+                    response: ErrorResponse(
+                        code: code, message: error.localizedDescription, modelID: modelID
+                    )
+                ).response(from: request, context: context)
             } catch {
-                return try await ErrorResponse(
-                    code: "INFERENCE_FAILED", message: "\(error)", modelID: modelID
-                ).encodeResponse(status: .internalServerError, context: context)
+                return try EditedResponse(
+                    status: .internalServerError,
+                    headers: [.contentType: "application/json"],
+                    response: ErrorResponse(
+                        code: "INFERENCE_FAILED", message: "\(error)", modelID: modelID
+                    )
+                ).response(from: request, context: context)
             }
         }
 
@@ -286,14 +325,14 @@ public struct RunnerServer {
         return devices
     }
 
-    private func mapError(_ error: CoreAIRunnerError) -> (HTTPResponseStatus, String) {
+    private func mapError(_ error: CoreAIRunnerError) -> (HTTPResponse.Status, String) {
         switch error {
         case .modelNotInstalled: return (.notFound, "MODEL_NOT_INSTALLED")
         case .modelLoadFailed: return (.internalServerError, "MODEL_LOAD_FAILED")
         case .inferenceFailed: return (.internalServerError, "INFERENCE_FAILED")
         case .unsupportedDevice: return (.forbidden, "UNSUPPORTED_DEVICE")
         case .patchRequired: return (.internalServerError, "PATCH_REQUIRED")
-        case .memoryInsufficient: return (.insufficientStorage, "MEMORY_INSUFFICIENT")
+        case .memoryInsufficient: return (.internalServerError, "MEMORY_INSUFFICIENT")
         case .timeout: return (.requestTimeout, "TIMEOUT")
         case .invalidInput, .missingInput: return (.badRequest, "INVALID_INPUT")
         case .catalogError: return (.serviceUnavailable, "CATALOG_ERROR")
@@ -301,7 +340,14 @@ public struct RunnerServer {
     }
 }
 
-// Hummingbird request context
+/// Hummingbird 2.x request context.
+/// RouterRequestContext requires both `coreContext` and `routerContext`.
 struct CoreAIRunnerContext: RouterRequestContext {
     var coreContext: CoreRequestContextStorage
+    var routerContext: RouterBuilderContext
+
+    init(source: Source) {
+        self.coreContext = .init(source: source)
+        self.routerContext = .init()
+    }
 }
