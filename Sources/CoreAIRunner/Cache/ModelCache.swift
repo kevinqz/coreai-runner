@@ -81,7 +81,10 @@ public actor ModelCache {
         let task = Task<(any ModelAdapter), Error> { [weak self] in
             guard let self else { throw CoreAIRunnerError.modelLoadFailed(
                 modelID: modelID, detail: "cache deallocated") }
-            let entry = try await self.catalog.entry(forID: modelID)
+            guard let entry = await catalog.getModel(id: modelID) else {
+                throw CoreAIRunnerError.modelLoadFailed(
+                    modelID: modelID, detail: "model not found in the catalog")
+            }
             let adapter = try await self.createAdapter(for: entry, modelID: modelID, progress: progress)
             await self.setLoaded(modelID: modelID, adapter: adapter, sticky: sticky)
             return adapter
@@ -146,7 +149,7 @@ public actor ModelCache {
     // MARK: - Adapter creation
 
     private func createAdapter(
-        for entry: CoreAIKit.ModelCatalog.Entry,
+        for entry: CatalogModelEntry,
         modelID: String,
         progress: (@Sendable (Double) -> Void)?
     ) async throws -> any ModelAdapter {
@@ -172,6 +175,7 @@ public actor ModelCache {
         }
 
         if capabilities.contains("promptable-segmentation") {
+            #if canImport(CoreAIImageSegmenter)
             // SAM 3 via CoreAIImageSegmenter (system framework, text-prompt).
             // The segmenter bundle needs a directory with metadata.json + .aimodel + tokenizer/.
             // Download via ModelStore, then load from the bundle directory.
@@ -181,9 +185,15 @@ public actor ModelCache {
                     path: nil),
                 progress: { p in progress?(p.fraction) })
             return try await SegmenterAdapter(modelID: modelID, bundleDir: url.path)
+            #else
+            throw CoreAIRunnerError.modelLoadFailed(
+                modelID: modelID,
+                detail: "promptable-segmentation (SAM 3) needs the CoreAIImageSegmenter framework, absent in this SDK (the macOS 27 beta ships CoreAI core only). Build against an SDK that includes it.")
+            #endif
         }
 
         if capabilities.contains("image-generation") {
+            #if canImport(CoreAIDiffusionPipeline)
             // FLUX.2 / Z-Image via CoreAIDiffusionPipeline (system framework).
             // Multi-component bundle (TextEncoder + Transformer + VAE + tokenizer).
             // PipelineDescriptor auto-detects from metadata.json.
@@ -193,6 +203,11 @@ public actor ModelCache {
                     path: nil),
                 progress: { p in progress?(p.fraction) })
             return try await DiffusionAdapter(modelID: modelID, bundleDir: url)
+            #else
+            throw CoreAIRunnerError.modelLoadFailed(
+                modelID: modelID,
+                detail: "image-generation (FLUX.2) needs the CoreAIDiffusionPipeline framework, absent in this SDK (the macOS 27 beta ships CoreAI core only). Build against an SDK that includes it.")
+            #endif
         }
 
         throw CoreAIRunnerError.modelLoadFailed(

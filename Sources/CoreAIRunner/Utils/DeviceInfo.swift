@@ -4,7 +4,6 @@
 // /v1/health endpoint returns so clients can make informed decisions.
 
 import Foundation
-import ProcessInfo
 
 #if canImport(UIKit)
 import UIKit

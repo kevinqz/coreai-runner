@@ -12,6 +12,7 @@
 // iOS note: needs AOT-compiled .aimodelc bundle (JIT crashes on device).
 // macOS: JIT .aimodel works fine.
 
+#if canImport(CoreAIImageSegmenter)
 import CoreGraphics
 import Foundation
 import CoreAIImageSegmenter
@@ -127,3 +128,4 @@ public struct SegmenterAdapter: ModelAdapter {
         return try ImageIO.savePNG(cgImage, prefix: prefix)
     }
 }
+#endif

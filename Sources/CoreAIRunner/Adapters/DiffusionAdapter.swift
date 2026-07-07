@@ -11,6 +11,7 @@
 // macOS-only at 4B params (exceeds iOS per-process memory limit).
 // 4-step distilled, guidance 1.0, discreteFlow scheduler.
 
+#if canImport(CoreAIDiffusionPipeline)
 import CoreAI
 import CoreAIDiffusionPipeline
 import CoreGraphics
@@ -112,3 +113,4 @@ public struct DiffusionAdapter: ModelAdapter {
         )
     }
 }
+#endif

@@ -31,13 +31,12 @@ let package = Package(
                 .product(name: "Hummingbird", package: "hummingbird"),
                 .product(name: "HummingbirdCore", package: "hummingbird"),
                 .product(name: "Logging", package: "swift-log"),
-            ],
-            // System frameworks for SAM 3 (CoreAIImageSegmenter) and
-            // FLUX.2 (CoreAIDiffusionPipeline) — both ship with the OS.
-            linkerSettings: [
-                .linkedFramework("CoreAIImageSegmenter"),
-                .linkedFramework("CoreAIDiffusionPipeline"),
             ]
+            // SAM 3 (CoreAIImageSegmenter) + FLUX.2 (CoreAIDiffusionPipeline) are NOT
+            // linked explicitly: their adapters `#if canImport` them and Swift autolinks
+            // each system framework only when the SDK actually ships it. The macOS 27
+            // beta SDK carries the CoreAI core runtime but not these two pipeline
+            // frameworks yet; explicit -framework flags would fail the link today.
         ),
         .executableTarget(
             name: "CoreAIRunnerCLI",
