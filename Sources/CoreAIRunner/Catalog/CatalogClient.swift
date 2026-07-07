@@ -10,6 +10,13 @@
 //  still work without the catalog.)
 
 import Foundation
+import Logging
+
+private let catalogLogger = Logger(label: "coreai-runner.catalog")
+
+fileprivate func logError(_ msg: String) {
+    catalogLogger.error(.init(stringLiteral: msg))
+}
 
 public actor CatalogClient {
 
@@ -25,7 +32,7 @@ public actor CatalogClient {
     private var listCache: [CatalogModelEntry]?
     private var listCacheExpiresAt: Date?
 
-    public init(apiBase: String = "https://raw.githubusercontent.com/kevinqz/coreai-catalog/main/dist") {
+    public init(apiBase: String = "https://raw.githubusercontent.com/kevinqz/coreai-catalog/main/dist/") {
         self.apiBase = URL(string: apiBase)!
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 10
@@ -43,18 +50,25 @@ public actor CatalogClient {
 
         // Fetch full catalog and find model (catalog is static JSON, not a REST API)
         guard let url = URL(string: "catalog.json", relativeTo: apiBase) else { return nil }
-        guard let (data, response) = try? await session.data(from: url),
-              let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-            return cache[id]?.entry  // return stale if available
+        let responseData: Data
+        do {
+            let (data, response) = try await session.data(from: url)
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+                return cache[id]?.entry
+            }
+            responseData = data
+        } catch {
+            return cache[id]?.entry
         }
 
         // Parse { "models": [...] }
         let models: [CatalogModelEntry]
-        if let wrapper = try? JSONDecoder().decode(CatalogListResponse.self, from: data) {
+        do {
+            let wrapper = try JSONDecoder().decode(CatalogListResponse.self, from: responseData)
             models = wrapper.models
-        } else if let direct = try? JSONDecoder().decode([CatalogModelEntry].self, from: data) {
-            models = direct
-        } else {
+        } catch {
+            // Log the decode error so it's visible in the runner console
+            logError("Catalog decode failed: \(error)")
             return cache[id]?.entry
         }
 
@@ -75,19 +89,30 @@ public actor CatalogClient {
             return cached
         }
 
-        guard let url = URL(string: "catalog.json", relativeTo: apiBase),
-              let (data, response) = try? await session.data(from: url),
-              let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+        guard let url = URL(string: "catalog.json", relativeTo: apiBase) else {
+            logError("Catalog URL construction failed")
+            return listCache ?? []
+        }
+        let responseData: Data
+        do {
+            let (data, response) = try await session.data(from: url)
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+                logError("Catalog fetch: HTTP \((response as? HTTPURLResponse)?.statusCode ?? -1)")
+                return listCache ?? []
+            }
+            responseData = data
+        } catch {
+            logError("Catalog fetch error: \(error)")
             return listCache ?? []
         }
 
         // The catalog returns { "models": [...] }
         let models: [CatalogModelEntry]
-        if let wrapper = try? JSONDecoder().decode(CatalogListResponse.self, from: data) {
+        do {
+            let wrapper = try JSONDecoder().decode(CatalogListResponse.self, from: responseData)
             models = wrapper.models
-        } else if let direct = try? JSONDecoder().decode([CatalogModelEntry].self, from: data) {
-            models = direct
-        } else {
+        } catch {
+            logError("Catalog decode failed (listModels): \(error)")
             return listCache ?? []
         }
 
@@ -194,6 +219,19 @@ public struct CatalogModelEntry: Codable, Sendable, Hashable {
             case processorRequired = "processor_required"
             case aotRequired = "aot_required"
         }
+
+        // Custom decoder: catalog uses "yes"/"no"/"unknown" (strings) for
+        // some boolean fields alongside true/false/null.
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            runtimeName = try c.decodeIfPresent(String.self, forKey: .runtimeName)
+            runner = try c.decodeIfPresent(String.self, forKey: .runner)
+            stockRuntime = try c.decodeFlexibleBool(forKey: .stockRuntime)
+            patchRequired = try c.decodeFlexibleBool(forKey: .patchRequired)
+            tokenizerRequired = try c.decodeFlexibleBool(forKey: .tokenizerRequired)
+            processorRequired = try c.decodeFlexibleBool(forKey: .processorRequired)
+            aotRequired = try c.decodeFlexibleBool(forKey: .aotRequired)
+        }
     }
 
     public struct DeviceSupport: Codable, Sendable, Hashable {
@@ -211,7 +249,7 @@ public struct CatalogModelEntry: Codable, Sendable, Hashable {
         // alongside true/false/null. Decode any non-bool as nil.
         public init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
-            iphone = try c.decodeIfPresent(Bool.self, forKey: .iphone)
+            iphone = try c.decodeFlexibleBool(forKey: .iphone)
             ipad = try c.decodeFlexibleBool(forKey: .ipad)
             mac = try c.decodeFlexibleBool(forKey: .mac)
             macOnly = try c.decodeFlexibleBool(forKey: .macOnly)
@@ -267,13 +305,12 @@ struct CatalogListResponse: Codable, Sendable {
 
 /// The catalog uses "unknown" (string) for some device_support fields
 /// alongside true/false/null. This extension decodes any non-bool value as nil.
-private extension KeyedDecodingContainer {
+// Shared across DeviceSupport and ModelRuntime
+extension KeyedDecodingContainer {
     func decodeFlexibleBool(forKey key: Key) throws -> Bool? {
-        // Try Bool first
         if let value = try? decodeIfPresent(Bool.self, forKey: key) {
             return value
         }
-        // If it's a string like "unknown", treat as nil
         return nil
     }
 }
