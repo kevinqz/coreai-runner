@@ -12,3 +12,9 @@ build/
 # IDE
 .vscode/
 .idea/
+
+# Apple bug reports (not for public repo)
+APPLE_BUG_REPORT_GITHUB.md
+APPLE_FEEDBACK_ASSISTANT.md
+repro_depth_crash.swift
+
