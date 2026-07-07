@@ -198,13 +198,31 @@ public struct CatalogModelEntry: Codable, Sendable, Hashable {
 
     public struct DeviceSupport: Codable, Sendable, Hashable {
         public let iphone: Bool?
-        public let ipad: Bool?  // can be null (unknown)
+        public let ipad: Bool?  // can be null or "unknown" in catalog
         public let mac: Bool?
         public let macOnly: Bool?
 
         enum CodingKeys: String, CodingKey {
             case iphone, ipad, mac
             case macOnly = "mac_only"
+        }
+
+        // Custom decoder: catalog uses "unknown" (string) for some fields
+        // alongside true/false/null. Decode any non-bool as nil.
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            iphone = try c.decodeIfPresent(Bool.self, forKey: .iphone)
+            ipad = try c.decodeFlexibleBool(forKey: .ipad)
+            mac = try c.decodeFlexibleBool(forKey: .mac)
+            macOnly = try c.decodeFlexibleBool(forKey: .macOnly)
+        }
+
+        public func encode(to encoder: Encoder) throws {
+            var c = encoder.container(keyedBy: CodingKeys.self)
+            try c.encodeIfPresent(iphone, forKey: .iphone)
+            try c.encodeIfPresent(ipad, forKey: .ipad)
+            try c.encodeIfPresent(mac, forKey: .mac)
+            try c.encodeIfPresent(macOnly, forKey: .macOnly)
         }
     }
 
@@ -243,4 +261,19 @@ public struct CatalogModelEntry: Codable, Sendable, Hashable {
 
 struct CatalogListResponse: Codable, Sendable {
     let models: [CatalogModelEntry]
+}
+
+// MARK: - Flexible Bool decoding
+
+/// The catalog uses "unknown" (string) for some device_support fields
+/// alongside true/false/null. This extension decodes any non-bool value as nil.
+private extension KeyedDecodingContainer {
+    func decodeFlexibleBool(forKey key: Key) throws -> Bool? {
+        // Try Bool first
+        if let value = try? decodeIfPresent(Bool.self, forKey: key) {
+            return value
+        }
+        // If it's a string like "unknown", treat as nil
+        return nil
+    }
 }
