@@ -30,13 +30,15 @@ public actor ModelCache {
     private var entries: [String: Entry] = [:]
     private var downloadTasks: [String: Task<any ModelAdapter, Error>] = [:]
     private let store: ModelStore
+    private let catalog: CatalogClient
 
     // Eviction thresholds
     private let minAvailableGB: Double = 2.0  // evict when less than 2GB free
     private let maxThermalLevel: Int = 1      // evict at .fair or worse
 
-    public init(store: ModelStore = .default) {
+    public init(store: ModelStore = .default, catalog: CatalogClient = .shared) {
         self.store = store
+        self.catalog = catalog
     }
 
     // MARK: - Get (predict path)
@@ -85,8 +87,20 @@ public actor ModelCache {
                 throw CoreAIRunnerError.modelLoadFailed(
                     modelID: modelID, detail: "model not found in the catalog")
             }
-            let adapter = try await self.createAdapter(for: entry, modelID: modelID, progress: progress)
+            // Wire progress callback to track download status
+            let adapter = try await self.createAdapter(
+                for: entry, modelID: modelID,
+                progress: { fraction in
+                    progress?(fraction)
+                    Task { await self.updateDownloadProgress(modelID, DownloadStatus(
+                        modelID: modelID,
+                        fraction: fraction,
+                        state: fraction >= 1.0 ? .completed : .downloading
+                    ))}
+                }
+            )
             await self.setLoaded(modelID: modelID, adapter: adapter, sticky: sticky)
+            await self.clearDownloadProgress(modelID)
             return adapter
         }
         downloadTasks[modelID] = task
@@ -144,6 +158,44 @@ public actor ModelCache {
 
     public func loadedModelIDs() -> [String] {
         Array(entries.keys)
+    }
+
+    // MARK: - Installed status (downloaded on disk, not necessarily loaded)
+
+    /// Returns catalog IDs for models whose bundles exist on disk.
+    /// Maps by checking each catalog entry's HF repo against the ModelStore.
+    public func installedModelIDs() async -> Set<String> {
+        let entries = await catalog.listModels()
+        guard !entries.isEmpty else { return [] }
+
+        var installed: Set<String> = []
+        for entry in entries {
+            if let hf = entry.provenance?.huggingface {
+                let repo = "\(hf.owner)/\(hf.repo)"
+                let revision = hf.revision ?? "main"
+                let modelID = ModelID(repo, path: nil, revision: revision)
+                if store.localURL(for: modelID) != nil {
+                    installed.insert(entry.id)
+                }
+            }
+        }
+        return installed
+    }
+
+    // MARK: - Download progress tracking
+
+    private var downloadProgress: [String: DownloadStatus] = [:]
+
+    public func updateDownloadProgress(_ modelID: String, _ status: DownloadStatus) {
+        downloadProgress[modelID] = status
+    }
+
+    public func getDownloadStatus(_ modelID: String) -> DownloadStatus? {
+        downloadProgress[modelID]
+    }
+
+    public func clearDownloadProgress(_ modelID: String) {
+        downloadProgress.removeValue(forKey: modelID)
     }
 
     // MARK: - Adapter creation

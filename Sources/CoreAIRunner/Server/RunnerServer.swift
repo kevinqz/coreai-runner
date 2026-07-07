@@ -109,6 +109,8 @@ public struct RunnerServer: Sendable {
             let entries = await self.catalog.listModels(capability: capability)
             let loadedIDs = await self.cache.loadedModelIDs()
 
+            let installedIDs = await self.cache.installedModelIDs()
+
             let modelEntries: [ModelListResponse.ModelEntry] = entries.map { entry in
                 ModelListResponse.ModelEntry(
                     id: entry.id,
@@ -120,9 +122,9 @@ public struct RunnerServer: Sendable {
                     license: entry.license?.name,
                     commercialUse: entry.license?.commercialUse,
                     deviceSupport: self.deviceSupportArray(entry.deviceSupport),
-                    installed: false,  // TODO: check store.localURL
+                    installed: installedIDs.contains(entry.id),
                     loaded: loadedIDs.contains(entry.id),
-                    benchmarkMs: nil,  // TODO: from benchmarks if available
+                    benchmarkMs: nil,
                     runner: entry.runtime?.runner
                 )
             }
@@ -181,6 +183,30 @@ public struct RunnerServer: Sendable {
                 status: .ok,
                 headers: [.contentType: "application/json"],
                 response: LoadResponse(modelID: modelID, status: "unloaded", sizeMB: nil)
+            ).response(from: request, context: context)
+        }
+
+        // GET /v1/models/:model_id/status — installed, loaded, download progress
+        router.get("v1/models/:model_id/status") { request, context -> Response in
+            guard let modelID = try? context.parameters.require("model_id", as: String.self) else {
+                return try EditedResponse(
+                    status: .badRequest,
+                    headers: [.contentType: "application/json"],
+                    response: ErrorResponse(code: "INVALID_INPUT", message: "model_id is required")
+                ).response(from: request, context: context)
+            }
+            let loaded = await self.cache.isLoaded(modelID)
+            let download = await self.cache.getDownloadStatus(modelID)
+            let installedIDs = await self.cache.installedModelIDs()
+            return try EditedResponse(
+                status: .ok,
+                headers: [.contentType: "application/json"],
+                response: ModelStatusResponse(
+                    modelID: modelID,
+                    installed: installedIDs.contains(modelID),
+                    loaded: loaded,
+                    download: download
+                )
             ).response(from: request, context: context)
         }
 

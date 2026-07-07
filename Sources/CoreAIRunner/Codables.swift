@@ -197,6 +197,41 @@ public struct LoadResponse: ResponseCodable, Sendable {
     }
 }
 
+// MARK: - Model status + download progress
+
+public struct DownloadStatus: Codable, Sendable {
+    public let modelID: String
+    public let fraction: Double
+    public let state: State
+
+    public enum State: String, Codable, Sendable {
+        case queued, downloading, completed, failed
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case modelID = "model_id"
+        case fraction, state
+    }
+
+    public init(modelID: String, fraction: Double, state: State) {
+        self.modelID = modelID
+        self.fraction = fraction
+        self.state = state
+    }
+}
+
+public struct ModelStatusResponse: ResponseCodable, Sendable {
+    public let modelID: String
+    public let installed: Bool
+    public let loaded: Bool
+    public let download: DownloadStatus?
+
+    enum CodingKeys: String, CodingKey {
+        case modelID = "model_id"
+        case installed, loaded, download
+    }
+}
+
 // MARK: - Error response
 
 public struct ErrorResponse: ResponseCodable, Sendable {
