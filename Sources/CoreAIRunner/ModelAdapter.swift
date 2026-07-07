@@ -97,6 +97,14 @@ public struct AdapterOutput: Sendable {
         public let maskPath: String
         public let score: Float
         public let bbox: [Float]  // [x1, y1, x2, y2] normalized 0-1
+
+        // snake_case wire keys — the SotA convention for this API (matches
+        // coreai-catalog, ComfyUI, HF). Swift keeps idiomatic camelCase props.
+        enum CodingKeys: String, CodingKey {
+            case maskPath = "mask_path"
+            case score
+            case bbox
+        }
     }
 
     public struct Timing: Sendable, Codable {
@@ -106,6 +114,15 @@ public struct AdapterOutput: Sendable {
         public let postprocessMs: Double
         public let totalMs: Double
         public let computeUnitUsed: String  // "GPU" | "ANE" | "CPU"
+
+        enum CodingKeys: String, CodingKey {
+            case loadMs = "load_ms"
+            case preprocessMs = "preprocess_ms"
+            case inferenceMs = "inference_ms"
+            case postprocessMs = "postprocess_ms"
+            case totalMs = "total_ms"
+            case computeUnitUsed = "compute_unit_used"
+        }
     }
 
     public init(
