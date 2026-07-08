@@ -209,6 +209,9 @@ public actor ModelCache {
     /// Returns "aot", "jit", or nil if the bundle can't be found. Detection is by file extension,
     /// matching the zoo's bundleKind() pattern. On iOS, JIT bundles >4B risk jetsam kills —
     /// this lets callers warn the user proactively.
+    ///
+    /// Also detects the new .vlm bundle format (3 components: vision.aimodel, embed.aimodel,
+    /// model.aimodel) — returns "vlm" for vision-language models using the multi-component format.
     public func bundleCompilation(for modelID: String) async -> String? {
         guard let entry = await catalog.getModel(id: modelID),
               let hf = entry.provenance?.huggingface else { return nil }
@@ -220,6 +223,8 @@ public actor ModelCache {
         let fm = FileManager.default
         guard let entries = try? fm.contentsOfDirectory(atPath: bundleURL.path) else { return nil }
         if entries.contains(where: { $0.hasSuffix(".aimodelc") }) { return "aot" }
+        // New VLM format: a .vlm directory with 3 components
+        if entries.contains(where: { $0.hasSuffix(".vlm") }) { return "vlm" }
         if entries.contains(where: { $0.hasSuffix(".aimodel") }) { return "jit" }
         return nil
     }
