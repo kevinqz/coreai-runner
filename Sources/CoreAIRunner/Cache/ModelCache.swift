@@ -203,6 +203,27 @@ public actor ModelCache {
         downloadProgress.removeValue(forKey: modelID)
     }
 
+    // MARK: - Bundle compilation detection (AOT vs JIT)
+
+    /// Detects whether the bundle for `modelID` is AOT-compiled (.aimodelc) or JIT (.aimodel).
+    /// Returns "aot", "jit", or nil if the bundle can't be found. Detection is by file extension,
+    /// matching the zoo's bundleKind() pattern. On iOS, JIT bundles >4B risk jetsam kills —
+    /// this lets callers warn the user proactively.
+    public func bundleCompilation(for modelID: String) async -> String? {
+        guard let entry = await catalog.getModel(id: modelID),
+              let hf = entry.provenance?.huggingface else { return nil }
+        let repo = "\(hf.owner)/\(hf.repo)"
+        let revision = hf.revision ?? "main"
+        let mid = ModelID(repo, path: nil, revision: revision)
+        guard let bundleURL = store.localURL(for: mid) else { return nil }
+
+        let fm = FileManager.default
+        guard let entries = try? fm.contentsOfDirectory(atPath: bundleURL.path) else { return nil }
+        if entries.contains(where: { $0.hasSuffix(".aimodelc") }) { return "aot" }
+        if entries.contains(where: { $0.hasSuffix(".aimodel") }) { return "jit" }
+        return nil
+    }
+
     // MARK: - Adapter creation
 
     private func createAdapter(

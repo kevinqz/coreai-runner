@@ -101,6 +101,16 @@ public struct RunnerServer: Sendable {
             )
         }
 
+        // GET /v1/capabilities — runtime feature advertisement (spec §19.2).
+        // Lets clients (lerobot-coreai, ComfyUI) discover what the runner supports.
+        router.get("v1/capabilities") { request, context in
+            try EditedResponse(
+                status: .ok,
+                headers: [.contentType: "application/json"],
+                response: CapabilitiesResponse()
+            ).response(from: request, context: context)
+        }
+
         // GET /v1/models — list models (optionally filtered by capability)
         router.get("v1/models") { request, _ in
             let query = request.uri.query
@@ -198,6 +208,7 @@ public struct RunnerServer: Sendable {
             let loaded = await self.cache.isLoaded(modelID)
             let download = await self.cache.getDownloadStatus(modelID)
             let installedIDs = await self.cache.installedModelIDs()
+            let compilation = await self.cache.bundleCompilation(for: modelID)
             return try EditedResponse(
                 status: .ok,
                 headers: [.contentType: "application/json"],
@@ -205,7 +216,8 @@ public struct RunnerServer: Sendable {
                     modelID: modelID,
                     installed: installedIDs.contains(modelID),
                     loaded: loaded,
-                    download: download
+                    download: download,
+                    compilation: compilation
                 )
             ).response(from: request, context: context)
         }

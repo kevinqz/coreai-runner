@@ -225,10 +225,52 @@ public struct ModelStatusResponse: ResponseCodable, Sendable {
     public let installed: Bool
     public let loaded: Bool
     public let download: DownloadStatus?
+    /// Compilation mode: "aot" (.aimodelc, ahead-of-time compiled), "jit" (.aimodel, on-device
+    /// specialization), or nil if unknown. On iOS, JIT bundles >4B risk jetsam kills — this field
+    /// lets callers warn the user proactively (the Zoo hard-codes AOT-only for iOS; we surface it).
+    public let compilation: String?
+    /// Active engine variant: "coreai-sequential" or "coreai-pipelined" (LLM models only).
+    /// nil for non-LLM models or when not loaded.
+    public let engineVariant: String?
 
     enum CodingKeys: String, CodingKey {
         case modelID = "model_id"
-        case installed, loaded, download
+        case installed, loaded, download, compilation
+        case engineVariant = "engine_variant"
+    }
+
+    public init(modelID: String, installed: Bool, loaded: Bool,
+                download: DownloadStatus? = nil, compilation: String? = nil,
+                engineVariant: String? = nil) {
+        self.modelID = modelID
+        self.installed = installed
+        self.loaded = loaded
+        self.download = download
+        self.compilation = compilation
+        self.engineVariant = engineVariant
+    }
+}
+
+// MARK: - Capabilities (spec §19.2)
+
+/// Advertises which runtime kinds the runner supports. Lets clients (lerobot-coreai, ComfyUI)
+/// discover features without guessing.
+public struct CapabilitiesResponse: ResponseCodable, Sendable {
+    public let runtime: String = "coreai-runner"
+    public let supports: Supports
+
+    public struct Supports: Codable, Sendable {
+        public let llm: Bool = true
+        public let vlm: Bool = true
+        public let action: Bool = true       // robot policies (lerobot-coreai integration)
+        public let rewardModel: Bool = false // future
+        public let multiGraph: Bool = true   // split policies (encode + denoise_step)
+        public let hostLoop: Bool = true     // flow-matching / diffusion sampling
+        public let prefixCache: Bool = true  // KV reuse for multi-turn chat
+    }
+
+    public init() {
+        self.supports = Supports()
     }
 }
 

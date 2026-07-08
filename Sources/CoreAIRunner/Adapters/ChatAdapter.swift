@@ -26,6 +26,24 @@ public actor ChatAdapter: ModelAdapter {
     private var engine: (any InferenceEngine)?
     private var tokenizer: (any Tokenizer)?
     private var kvTokens: [Int32] = []           // exact token seq held in engine KV
+    // Which engine variant is active — surfaced in stats/status.
+    private var activeVariant: String = "unknown"
+
+    // Prefix cache: on by default. A/B switch: COREAI_RUNNER_NO_PREFIX_CACHE=1 forces the
+    // old reset()+full re-prefill path (ported from the zoo's CHATMAC_NO_PREFIX_CACHE).
+    private let prefixCacheEnabled =
+        ProcessInfo.processInfo.environment["COREAI_RUNNER_NO_PREFIX_CACHE"] == nil
+
+    // Engine variant fallback (ported from the zoo's ChatEngine.load): the factory's auto-detect
+    // maps every "dynamic" structure to pipelined, which SIGTRAPs in GrowingLogitsBuffer for the
+    // common sequential bundles. So we force coreai-sequential first, and fall back to
+    // coreai-pipelined only when the sequential engine rejects the bundle's extra SSM states.
+    private static let launchChunkThreshold =
+        ProcessInfo.processInfo.environment["COREAI_CHUNK_THRESHOLD"]
+    private static func restoreLaunchChunkThreshold() {
+        if let v = launchChunkThreshold { setenv("COREAI_CHUNK_THRESHOLD", v, 1) }
+        else { unsetenv("COREAI_CHUNK_THRESHOLD") }
+    }
 
     public init(modelID: String, bundleDir: String) {
         self.modelID = modelID
@@ -53,15 +71,42 @@ public actor ChatAdapter: ModelAdapter {
         let configData = try JSONEncoder().encode(config)
 
         // Load tokenizer in parallel with engine creation.
-        // Auto-detect variant (nil → factory inspects model structure).
         async let tokenizerResult = bundle.loadTokenizer()
 
-        let loadedEngine = try await EngineFactory.createEngine(
-            config: configData, modelURL: modelURL,
-            options: EngineOptions()  // variant: nil = auto-detect
-        )
+        // Engine variant selection (ported from the zoo's ChatEngine.load):
+        // The factory's auto-detect maps every "dynamic" structure to the GPU pipelined variant,
+        // whose logits path asserts in GrowingLogitsBuffer for them (SIGTRAP on load). The
+        // coreai-sequential variant drives these bundles correctly. Hybrid decode-pipelined
+        // bundles (qwen3.5 family, Granite, Ornith) carry extra fixed-shape SSM states the
+        // sequential engine rejects — those fall through to pipelined via the catch.
+        Self.restoreLaunchChunkThreshold()
+
+        let loadedEngine: any InferenceEngine
+        let variant: String
+        do {
+            loadedEngine = try await EngineFactory.createEngine(
+                config: configData, modelURL: modelURL,
+                options: EngineOptions(variant: "coreai-sequential")
+            )
+            variant = "coreai-sequential"
+        } catch let error as InferenceRuntimeError {
+            // Hybrid decode-pipelined bundles carry extra fixed-shape SSM states the sequential
+            // engine rejects. Fall back to pipelined with per-token prefill (chunk threshold 1).
+            let detail = String(describing: error)
+            if detail.contains("Expected 2 states") && !bundle.name.contains("gather") {
+                setenv("COREAI_CHUNK_THRESHOLD", "1", 1)
+                loadedEngine = try await EngineFactory.createEngine(
+                    config: configData, modelURL: modelURL,
+                    options: EngineOptions(variant: "coreai-pipelined")
+                )
+                variant = "coreai-pipelined"
+            } else {
+                throw error
+            }
+        }
 
         self.engine = loadedEngine
+        self.activeVariant = variant
         self.tokenizer = try await tokenizerResult
     }
 
@@ -215,7 +260,13 @@ public actor ChatAdapter: ModelAdapter {
     // MARK: - Prefix reuse helpers
 
     private func trimAndFeedAsync(engine: any InferenceEngine, fullTokens: [Int32]) async -> Int {
-        let want = min(Self.commonPrefixLength(fullTokens, kvTokens), max(0, fullTokens.count - 1))
+        // Cap at full.count-1 so at least one token is always prefilled (the engine needs a
+        // query step to produce the next-token logits). Without this cap, if the entire prompt
+        // is cached from a prior turn, the engine has no query step and stalls.
+        // Disabled entirely when prefixCacheEnabled is false (env toggle for A/B testing).
+        let want = prefixCacheEnabled
+            ? min(Self.commonPrefixLength(fullTokens, kvTokens), max(0, fullTokens.count - 1))
+            : 0
         guard want > 0 else {
             try? await engine.reset()
             kvTokens = fullTokens
@@ -226,7 +277,7 @@ public actor ChatAdapter: ModelAdapter {
             kvTokens = fullTokens
             return retained
         } else {
-            // Engine can't rewind (SSM) — full reset
+            // Engine can't rewind (SSM hybrids: qwen3.5, RWKV-7) — full reset
             try? await engine.reset()
             kvTokens = fullTokens
             return 0

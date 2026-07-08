@@ -144,3 +144,31 @@ import Foundation
     let entry = try JSONDecoder().decode(CatalogModelEntry.self, from: json)
     #expect(entry.size?.sizeInMB == 4096.0)
 }
+
+@Test func capabilitiesResponseCodable() async throws {
+    let caps = CapabilitiesResponse()
+    let encoded = try JSONEncoder().encode(caps)
+    let decoded = try JSONDecoder().decode(CapabilitiesResponse.self, from: encoded)
+
+    #expect(decoded.runtime == "coreai-runner")
+    #expect(decoded.supports.llm == true)
+    #expect(decoded.supports.action == true)
+    #expect(decoded.supports.hostLoop == true)
+    #expect(decoded.supports.prefixCache == true)
+}
+
+@Test func modelStatusResponseWithCompilation() async throws {
+    let status = ModelStatusResponse(
+        modelID: "test-model",
+        installed: true,
+        loaded: false,
+        compilation: "aot",
+        engineVariant: "coreai-sequential"
+    )
+    let encoded = try JSONEncoder().encode(status)
+    let decoded = try JSONDecoder().decode(ModelStatusResponse.self, from: encoded)
+
+    #expect(decoded.modelID == "test-model")
+    #expect(decoded.compilation == "aot")
+    #expect(decoded.engineVariant == "coreai-sequential")
+}
