@@ -500,6 +500,26 @@ public struct RunnerServer: Sendable {
             }
 
             let modelID = predictRequest.modelID
+
+            // Action policy path (spec §19.1): runtime_kind=action means robot policy inference.
+            // The request carries an observation (images/state/task) and expects an action chunk.
+            // NOTE: Action inference requires an ActionAdapter + host-loop sampler, which is the
+            // lerobot-coreai v0.2 scope. Until then, we return a clear 501 so clients can detect
+            // support without crashing.
+            if predictRequest.runtimeKind == "action" {
+                return try EditedResponse(
+                    status: .notImplemented,
+                    headers: [.contentType: "application/json"],
+                    response: ErrorResponse(
+                        code: "ACTION_RUNTIME_NOT_AVAILABLE",
+                        message: "runtime_kind=action requires the action adapter (lerobot-coreai v0.2). "
+                               + "The runner can load action artifacts and report their graph/host_loop "
+                               + "structure, but host-driven action sampling is not yet implemented.",
+                        modelID: modelID
+                    )
+                ).response(from: request, context: context)
+            }
+
             let input = AdapterInput(
                 modelID: modelID,
                 imagePath: predictRequest.input.imagePath,

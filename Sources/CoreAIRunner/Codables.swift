@@ -118,6 +118,9 @@ public struct PredictRequest: Codable, Sendable {
     public let modelID: String
     public let input: PredictInput
     public let options: PredictOptions?
+    /// Runtime kind: "vision" (default, image-based inference) or "action" (robot policy
+    /// — observation with images/state/task → action chunk). Spec §19.1.
+    public let runtimeKind: String?
 
     public struct PredictInput: Codable, Sendable {
         public let imagePath: String?
@@ -128,9 +131,11 @@ public struct PredictRequest: Codable, Sendable {
         public let points: [AdapterInput.PointPrompt]?
         public let boxes: [AdapterInput.BoxPrompt]?
         public let textPrompt: String?
+        // Action policy observation (runtime_kind=action): images are paths, state is a float array.
+        public let observation: ActionObservation?
 
         enum CodingKeys: String, CodingKey {
-            case prompt, temperature, points, boxes
+            case prompt, temperature, points, boxes, observation
             case imagePath = "image_path"
             case maxTokens = "max_tokens"
             case scoreThreshold = "score_threshold"
@@ -150,6 +155,21 @@ public struct PredictRequest: Codable, Sendable {
         case modelID = "model_id"
         case input
         case options
+        case runtimeKind = "runtime_kind"
+    }
+}
+
+/// Observation for a robot policy action request (spec §19.1). Images are file paths to
+/// temp-written frames; state is the robot's proprioceptive joint positions; task is an
+/// optional language instruction.
+public struct ActionObservation: Codable, Sendable {
+    /// Keyed by LeRobot feature name: "observation.images.wrist", "observation.images.front", etc.
+    public let images: [String: String]?
+    public let state: [Double]?
+    public let task: String?
+
+    enum CodingKeys: String, CodingKey {
+        case images, state, task
     }
 }
 
@@ -157,6 +177,10 @@ public struct PredictResponse: ResponseCodable, Sendable {
     public let modelID: String
     public let output: PredictOutput
     public let timing: AdapterOutput.Timing
+    /// Action chunk for robot policies (runtime_kind=action, spec §19.1). [[Float]] —
+    /// shape [chunk_size, action_dim]. Absent for vision/text models.
+    public let action: [[Double]]?
+    public let actionFeatures: ActionFeatures?
 
     public struct PredictOutput: Codable, Sendable {
         public let kind: String
@@ -172,10 +196,41 @@ public struct PredictResponse: ResponseCodable, Sendable {
         }
     }
 
+    /// Action metadata (spec §19.1 response).
+    public struct ActionFeatures: Codable, Sendable {
+        public let shape: [Int]?
+        public let representation: String?
+
+        enum CodingKeys: String, CodingKey {
+            case shape, representation
+        }
+    }
+
     enum CodingKeys: String, CodingKey {
         case modelID = "model_id"
         case output
         case timing
+        case action
+        case actionFeatures = "action_features"
+    }
+
+    // Existing init for vision/text (no action fields).
+    public init(modelID: String, output: PredictOutput, timing: AdapterOutput.Timing) {
+        self.modelID = modelID
+        self.output = output
+        self.timing = timing
+        self.action = nil
+        self.actionFeatures = nil
+    }
+
+    // Action init (spec §19.1).
+    public init(modelID: String, action: [[Double]], actionFeatures: ActionFeatures?,
+                timing: AdapterOutput.Timing) {
+        self.modelID = modelID
+        self.output = PredictOutput(kind: "action", outputPath: nil, text: nil, detections: nil, maskPaths: nil)
+        self.timing = timing
+        self.action = action
+        self.actionFeatures = actionFeatures
     }
 }
 
@@ -232,22 +287,54 @@ public struct ModelStatusResponse: ResponseCodable, Sendable {
     /// Active engine variant: "coreai-sequential" or "coreai-pipelined" (LLM models only).
     /// nil for non-LLM models or when not loaded.
     public let engineVariant: String?
+    /// Graph-role awareness for split policies (spec §19.3). Each graph has a name, functional
+    /// role, and loaded state. Absent for single-graph models.
+    public let graphs: [GraphInfo]?
+    /// Host-loop requirements for action policies (spec §19.3). Absent for non-action models.
+    public let hostLoop: HostLoopInfo?
+
+    public struct GraphInfo: Codable, Sendable {
+        public let name: String       // e.g. "encode", "denoise_step"
+        public let role: String       // e.g. "context_encoder", "denoise_step"
+        public let loaded: Bool
+
+        public init(name: String, role: String, loaded: Bool) {
+            self.name = name
+            self.role = role
+            self.loaded = loaded
+        }
+    }
+
+    public struct HostLoopInfo: Codable, Sendable {
+        public let required: Bool
+        public let supported: Bool  // runner supports host_loop (always true via capabilities)
+
+        public init(required: Bool, supported: Bool = true) {
+            self.required = required
+            self.supported = supported
+        }
+    }
 
     enum CodingKeys: String, CodingKey {
         case modelID = "model_id"
         case installed, loaded, download, compilation
         case engineVariant = "engine_variant"
+        case graphs
+        case hostLoop = "host_loop"
     }
 
     public init(modelID: String, installed: Bool, loaded: Bool,
                 download: DownloadStatus? = nil, compilation: String? = nil,
-                engineVariant: String? = nil) {
+                engineVariant: String? = nil,
+                graphs: [GraphInfo]? = nil, hostLoop: HostLoopInfo? = nil) {
         self.modelID = modelID
         self.installed = installed
         self.loaded = loaded
         self.download = download
         self.compilation = compilation
         self.engineVariant = engineVariant
+        self.graphs = graphs
+        self.hostLoop = hostLoop
     }
 }
 
