@@ -30,6 +30,7 @@ public actor ModelCache {
     private var entries: [String: Entry] = [:]
     private var downloadTasks: [String: Task<any ModelAdapter, Error>] = [:]
     private let store: ModelStore
+    private let downloader: ParallelModelDownloader
     private let catalog: CatalogClient
 
     // Eviction thresholds
@@ -38,6 +39,10 @@ public actor ModelCache {
 
     public init(store: ModelStore = .default, catalog: CatalogClient = .shared) {
         self.store = store
+        // Parallel downloader shares the store's directory so bundles land at the exact cache
+        // path ModelStore expects (<directory>/<repo>/<rev>/<path>/). A store.download() after the
+        // parallel download finds the bundle present and returns it immediately (fast-path).
+        self.downloader = ParallelModelDownloader(directory: store.directory)
         self.catalog = catalog
     }
 
@@ -210,12 +215,15 @@ public actor ModelCache {
 
         if capabilities.contains("chat") || capabilities.contains("text-generation") {
             // LLM via CoreAILanguageModels EngineFactory.
-            // Download bundle via ModelStore, then create ChatAdapter.
-            let url = try await store.download(
-                CoreAIKit.ModelID(
-                    entry.provenance?.huggingface?.owner ?? "",
-                    path: nil),
-                progress: { p in progress?(p.fraction) })
+            // Parallel-chunked download (8 connections, 16 MB chunks, cross-launch resume) — the
+            // multi-GB main.mlirb payload saturates a single HF/CDN stream, so fanning out is
+            // several times faster than ModelStore's sequential loop. The parallel downloader
+            // pre-populates the ModelStore cache path; store.download() then returns it (fast-path).
+            let modelID_hf = CoreAIKit.ModelID(
+                entry.provenance?.huggingface?.owner ?? "", path: nil)
+            try await downloader.download(
+                modelID_hf, progress: { p in progress?(p) })
+            let url = try await store.download(modelID_hf, progress: nil)
             return try await ChatAdapter(modelID: modelID, bundleDir: url.path)
         }
 
@@ -241,12 +249,12 @@ public actor ModelCache {
             #if canImport(CoreAIImageSegmenter)
             // SAM 3 via CoreAIImageSegmenter (system framework, text-prompt).
             // The segmenter bundle needs a directory with metadata.json + .aimodel + tokenizer/.
-            // Download via ModelStore, then load from the bundle directory.
-            let url = try await store.download(
-                CoreAIKit.ModelID(
-                    entry.provenance?.huggingface?.owner ?? "",
-                    path: nil),
-                progress: { p in progress?(p.fraction) })
+            // Parallel-chunked download pre-populates the cache; store.download() returns fast-path.
+            let modelID_hf = CoreAIKit.ModelID(
+                entry.provenance?.huggingface?.owner ?? "", path: nil)
+            try await downloader.download(
+                modelID_hf, progress: { p in progress?(p) })
+            let url = try await store.download(modelID_hf, progress: nil)
             return try await SegmenterAdapter(modelID: modelID, bundleDir: url.path)
             #else
             throw CoreAIRunnerError.modelLoadFailed(
@@ -260,11 +268,12 @@ public actor ModelCache {
             // FLUX.2 / Z-Image via CoreAIDiffusionPipeline (system framework).
             // Multi-component bundle (TextEncoder + Transformer + VAE + tokenizer).
             // PipelineDescriptor auto-detects from metadata.json.
-            let url = try await store.download(
-                CoreAIKit.ModelID(
-                    entry.provenance?.huggingface?.owner ?? "",
-                    path: nil),
-                progress: { p in progress?(p.fraction) })
+            // Parallel-chunked download pre-populates the cache; store.download() returns fast-path.
+            let modelID_hf = CoreAIKit.ModelID(
+                entry.provenance?.huggingface?.owner ?? "", path: nil)
+            try await downloader.download(
+                modelID_hf, progress: { p in progress?(p) })
+            let url = try await store.download(modelID_hf, progress: nil)
             return try await DiffusionAdapter(modelID: modelID, bundleDir: url)
             #else
             throw CoreAIRunnerError.modelLoadFailed(
