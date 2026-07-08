@@ -208,6 +208,17 @@ public actor ModelCache {
         // Determine model type from capabilities
         let capabilities = entry.capabilities
 
+        if capabilities.contains("chat") || capabilities.contains("text-generation") {
+            // LLM via CoreAILanguageModels EngineFactory.
+            // Download bundle via ModelStore, then create ChatAdapter.
+            let url = try await store.download(
+                CoreAIKit.ModelID(
+                    entry.provenance?.huggingface?.owner ?? "",
+                    path: nil),
+                progress: { p in progress?(p.fraction) })
+            return try await ChatAdapter(modelID: modelID, bundleDir: url.path)
+        }
+
         if capabilities.contains("monocular-depth") {
             return try await DepthAdapter(catalog: modelID, store: store, downloadProgress: { p in
                 progress?(p.fraction)

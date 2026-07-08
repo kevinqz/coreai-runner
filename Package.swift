@@ -16,6 +16,10 @@ let package = Package(
         // (CoreAILM from john-rocky/coreai-models v0.1.2-zoo).
         .package(url: "https://github.com/john-rocky/coreai-kit", branch: "main"),
 
+        // LanguageBundle, EngineFactory, InferenceEngine — the LLM runtime.
+        // Transitively pulled by coreai-kit; pinned at 0.1.2-zoo.
+        .package(url: "https://github.com/john-rocky/coreai-models", exact: "0.1.2-zoo"),
+
         // Lightweight HTTP server with Unix domain socket support.
         .package(url: "https://github.com/hummingbird-project/hummingbird", from: "2.0.0"),
 
@@ -32,6 +36,9 @@ let package = Package(
                 .product(name: "HummingbirdCore", package: "hummingbird"),
                 .product(name: "HummingbirdRouter", package: "hummingbird"),
                 .product(name: "Logging", package: "swift-log"),
+                // LLM runtime: EngineFactory, LanguageBundle, InferenceEngine.
+                // CoreAIShared comes transitively via CoreAILM.
+                .product(name: "CoreAILM", package: "coreai-models"),
             ]
             // SAM 3 (CoreAIImageSegmenter) + FLUX.2 (CoreAIDiffusionPipeline) are NOT
             // linked explicitly: their adapters `#if canImport` them and Swift autolinks

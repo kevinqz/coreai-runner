@@ -210,6 +210,268 @@ public struct RunnerServer: Sendable {
             ).response(from: request, context: context)
         }
 
+        // POST /v1/chat/completions — OpenAI-compatible chat (non-streaming)
+        router.post("v1/chat/completions") { request, context -> Response in
+            let chatRequest: ChatCompletionRequest
+            do {
+                chatRequest = try await request.decode(as: ChatCompletionRequest.self, context: context)
+            } catch {
+                return try EditedResponse(
+                    status: .badRequest,
+                    headers: [.contentType: "application/json"],
+                    response: ErrorResponse(
+                        code: "INVALID_INPUT", message: "Cannot decode request body: \(error)"
+                    )
+                ).response(from: request, context: context)
+            }
+
+            let modelID = chatRequest.model
+
+            // Load model (lazy)
+            let adapter: any ModelAdapter
+            do {
+                adapter = try await self.cache.getAdapter(modelID)
+            } catch {
+                do {
+                    adapter = try await self.cache.load(modelID)
+                } catch let loadError as CoreAIRunnerError {
+                    let (status, code) = self.mapError(loadError)
+                    return try EditedResponse(
+                        status: status,
+                        headers: [.contentType: "application/json"],
+                        response: ErrorResponse(
+                            code: code, message: loadError.localizedDescription, modelID: modelID
+                        )
+                    ).response(from: request, context: context)
+                } catch {
+                    return try EditedResponse(
+                        status: .internalServerError,
+                        headers: [.contentType: "application/json"],
+                        response: ErrorResponse(
+                            code: "MODEL_LOAD_FAILED", message: "\(error)", modelID: modelID
+                        )
+                    ).response(from: request, context: context)
+                }
+            }
+
+            guard let chatAdapter = adapter as? ChatAdapter else {
+                return try EditedResponse(
+                    status: .badRequest,
+                    headers: [.contentType: "application/json"],
+                    response: ErrorResponse(
+                        code: "NOT_A_CHAT_MODEL",
+                        message: "Model '\(modelID)' does not support chat. Use POST /v1/predict instead.",
+                        modelID: modelID
+                    )
+                ).response(from: request, context: context)
+            }
+
+            // Build messages array from request
+            let messages = chatRequest.messages.map { msg in
+                ["role": msg.role, "content": msg.content]
+            }
+            let maxTokens = chatRequest.maxTokens ?? 256
+            let temp = chatRequest.temperature ?? 0.7
+
+            do {
+                let output = try await chatAdapter.predict(AdapterInput(
+                    modelID: modelID,
+                    prompt: chatRequest.messages.last?.content,
+                    maxTokens: maxTokens,
+                    temperature: temp
+                ))
+
+                return try EditedResponse(
+                    status: .ok,
+                    headers: [.contentType: "application/json"],
+                    response: ChatCompletionResponse(
+                        id: "chatcmn-\(UUID().uuidString.prefix(8))",
+                        model: modelID,
+                        choices: [ChatCompletionResponse.Choice(
+                            index: 0,
+                            message: ChatCompletionResponse.Message(
+                                role: "assistant",
+                                content: output.text ?? ""
+                            ),
+                            finishReason: "stop"
+                        )],
+                        usage: ChatCompletionResponse.Usage(
+                            promptTokens: 0,
+                            completionTokens: 0,
+                            totalTokens: 0
+                        )
+                    )
+                ).response(from: request, context: context)
+            } catch let error as CoreAIRunnerError {
+                let (status, code) = self.mapError(error)
+                return try EditedResponse(
+                    status: status,
+                    headers: [.contentType: "application/json"],
+                    response: ErrorResponse(
+                        code: code, message: error.localizedDescription, modelID: modelID
+                    )
+                ).response(from: request, context: context)
+            } catch {
+                return try EditedResponse(
+                    status: .internalServerError,
+                    headers: [.contentType: "application/json"],
+                    response: ErrorResponse(
+                        code: "INFERENCE_FAILED", message: "\(error)", modelID: modelID
+                    )
+                ).response(from: request, context: context)
+            }
+        }
+
+        // POST /v1/chat/stream — SSE streaming chat (OpenAI-compatible)
+        router.post("v1/chat/stream") { request, context -> Response in
+            let chatRequest: ChatCompletionRequest
+            do {
+                chatRequest = try await request.decode(as: ChatCompletionRequest.self, context: context)
+            } catch {
+                return try EditedResponse(
+                    status: .badRequest,
+                    headers: [.contentType: "application/json"],
+                    response: ErrorResponse(
+                        code: "INVALID_INPUT", message: "Cannot decode request body: \(error)"
+                    )
+                ).response(from: request, context: context)
+            }
+
+            let modelID = chatRequest.model
+
+            // Load model (lazy)
+            let adapter: any ModelAdapter
+            do {
+                adapter = try await self.cache.getAdapter(modelID)
+            } catch {
+                do {
+                    adapter = try await self.cache.load(modelID)
+                } catch let loadError as CoreAIRunnerError {
+                    let (status, code) = self.mapError(loadError)
+                    return try EditedResponse(
+                        status: status,
+                        headers: [.contentType: "application/json"],
+                        response: ErrorResponse(
+                            code: code, message: loadError.localizedDescription, modelID: modelID
+                        )
+                    ).response(from: request, context: context)
+                } catch {
+                    return try EditedResponse(
+                        status: .internalServerError,
+                        headers: [.contentType: "application/json"],
+                        response: ErrorResponse(
+                            code: "MODEL_LOAD_FAILED", message: "\(error)", modelID: modelID
+                        )
+                    ).response(from: request, context: context)
+                }
+            }
+
+            guard let chatAdapter = adapter as? ChatAdapter else {
+                return try EditedResponse(
+                    status: .badRequest,
+                    headers: [.contentType: "application/json"],
+                    response: ErrorResponse(
+                        code: "NOT_A_CHAT_MODEL",
+                        message: "Model '\(modelID)' does not support chat streaming.",
+                        modelID: modelID
+                    )
+                ).response(from: request, context: context)
+            }
+
+            let messages = chatRequest.messages.map { msg in
+                ["role": msg.role, "content": msg.content]
+            }
+            let maxTokens = chatRequest.maxTokens ?? 256
+            let temp = chatRequest.temperature ?? 0.7
+
+            // Build SSE stream
+            let eventStream = try await chatAdapter.streamChat(
+                messages: messages,
+                maxTokens: maxTokens,
+                temperature: temp
+            )
+
+            // Convert ChatStreamEvent → SSE-formatted ByteBuffer chunks
+            let sseStream = AsyncThrowingStream<ByteBuffer, Error> { continuation in
+                Task {
+                    do {
+                        for try await event in eventStream {
+                            let sseData: Data
+                            switch event {
+                            case .token(let piece):
+                                let payload = ChatStreamChunk(choices: [ChatStreamChunk.Choice(
+                                    index: 0,
+                                    delta: ChatStreamChunk.Delta(content: piece),
+                                    finishReason: nil
+                                )])
+                                sseData = try JSONEncoder().encode(payload)
+                            case .stats(let stats):
+                                let payload = ChatStreamChunk(
+                                    choices: [],
+                                    stats: ChatStreamChunk.StreamStats(
+                                        promptTokens: stats.promptTokens,
+                                        reusedPromptTokens: stats.reusedPromptTokens
+                                    )
+                                )
+                                sseData = try JSONEncoder().encode(payload)
+                            case .done(let stats):
+                                let payload = ChatStreamChunk(
+                                    choices: [ChatStreamChunk.Choice(
+                                        index: 0,
+                                        delta: ChatStreamChunk.Delta(content: ""),
+                                        finishReason: "stop"
+                                    )],
+                                    stats: ChatStreamChunk.StreamStats(
+                                        promptTokens: stats.promptTokens,
+                                        reusedPromptTokens: stats.reusedPromptTokens,
+                                        generatedTokens: stats.generatedTokens,
+                                        tokensPerSecond: stats.tokensPerSecond
+                                    )
+                                )
+                                sseData = try JSONEncoder().encode(payload)
+                            case .error(let message):
+                                let payload = ChatStreamChunk(error: message)
+                                sseData = try JSONEncoder().encode(payload)
+                            }
+
+                            var buffer = ByteBuffer()
+                            buffer.writeString("data: ")
+                            buffer.writeBytes(sseData)
+                            buffer.writeString("\n\n")
+
+                            continuation.yield(buffer)
+
+                            if case .done = event {
+                                var doneBuffer = ByteBuffer()
+                                doneBuffer.writeString("data: [DONE]\n\n")
+                                continuation.yield(doneBuffer)
+                                continuation.finish()
+                                return
+                            }
+                            if case .error = event {
+                                continuation.finish(throwing: ChatStreamError.streamError)
+                                return
+                            }
+                        }
+                        continuation.finish()
+                    } catch {
+                        continuation.finish(throwing: error)
+                    }
+                }
+            }
+
+            let body = ResponseBody(asyncSequence: sseStream)
+            return Response(
+                status: .ok,
+                headers: [
+                    .contentType: "text/event-stream",
+                    .cacheControl: "no-cache",
+                    .connection: "keep-alive",
+                ],
+                body: body
+            )
+        }
+
         // POST /v1/predict — run inference
         router.post("v1/predict") { request, context -> Response in
             let predictRequest: PredictRequest

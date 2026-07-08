@@ -253,3 +253,140 @@ public struct ErrorResponse: ResponseCodable, Sendable {
         self.error = ErrorDetail(code: code, message: message, modelID: modelID)
     }
 }
+
+// MARK: - Chat completions (OpenAI-compatible)
+
+public struct ChatCompletionRequest: Codable, Sendable {
+    public let model: String
+    public let messages: [Message]
+    public let maxTokens: Int?
+    public let temperature: Double?
+
+    public struct Message: Codable, Sendable {
+        public let role: String      // "user", "assistant", "system"
+        public let content: String
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case model, messages
+        case maxTokens = "max_tokens"
+        case temperature
+    }
+}
+
+public struct ChatCompletionResponse: ResponseCodable, Sendable {
+    public let id: String
+    public let object: String = "chat.completion"
+    public let model: String
+    public let choices: [Choice]
+
+    public struct Choice: Codable, Sendable {
+        public let index: Int
+        public let message: Message
+        public let finishReason: String
+
+        enum CodingKeys: String, CodingKey {
+            case index, message
+            case finishReason = "finish_reason"
+        }
+    }
+
+    public struct Message: Codable, Sendable {
+        public let role: String
+        public let content: String
+    }
+
+    public let usage: Usage
+
+    public struct Usage: Codable, Sendable {
+        public let promptTokens: Int
+        public let completionTokens: Int
+        public let totalTokens: Int
+
+        enum CodingKeys: String, CodingKey {
+            case promptTokens = "prompt_tokens"
+            case completionTokens = "completion_tokens"
+            case totalTokens = "total_tokens"
+        }
+    }
+
+    public init(id: String, model: String, choices: [Choice], usage: Usage) {
+        self.id = id
+        self.model = model
+        self.choices = choices
+        self.usage = usage
+    }
+}
+
+// MARK: - Chat streaming (SSE chunks)
+
+public struct ChatStreamChunk: ResponseCodable, Sendable {
+    public let id: String = "chatcmn-stream"
+    public let object: String = "chat.completion.chunk"
+    public let model: String = ""
+    public let choices: [Choice]
+    public let stats: StreamStats?
+
+    public struct Choice: Codable, Sendable {
+        public let index: Int
+        public let delta: Delta
+        public let finishReason: String?
+
+        public init(index: Int, delta: Delta, finishReason: String?) {
+            self.index = index
+            self.delta = delta
+            self.finishReason = finishReason
+        }
+
+        enum CodingKeys: String, CodingKey {
+            case index, delta
+            case finishReason = "finish_reason"
+        }
+    }
+
+    public struct Delta: Codable, Sendable {
+        public let content: String
+
+        public init(content: String) {
+            self.content = content
+        }
+    }
+
+    public struct StreamStats: Codable, Sendable {
+        public let promptTokens: Int
+        public let reusedPromptTokens: Int
+        public var generatedTokens: Int?
+        public var tokensPerSecond: Double?
+
+        public init(
+            promptTokens: Int, reusedPromptTokens: Int,
+            generatedTokens: Int? = nil, tokensPerSecond: Double? = nil
+        ) {
+            self.promptTokens = promptTokens
+            self.reusedPromptTokens = reusedPromptTokens
+            self.generatedTokens = generatedTokens
+            self.tokensPerSecond = tokensPerSecond
+        }
+
+        enum CodingKeys: String, CodingKey {
+            case promptTokens = "prompt_tokens"
+            case reusedPromptTokens = "reused_prompt_tokens"
+            case generatedTokens = "generated_tokens"
+            case tokensPerSecond = "tokens_per_second"
+        }
+    }
+
+    public init(choices: [Choice], stats: StreamStats? = nil) {
+        self.choices = choices
+        self.stats = stats
+    }
+
+    public init(error message: String) {
+        self.choices = []
+        self.stats = nil
+    }
+}
+
+enum ChatStreamError: Error {
+    case streamError
+}
