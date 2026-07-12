@@ -39,6 +39,19 @@ public struct DetectionAdapter: ModelAdapter {
             downloadProgress: downloadProgress)
     }
 
+    /// Load a detection model directly from a LOCAL bundle (a directory holding one
+    /// `.aimodel`, or the `.aimodel` itself), bypassing the catalog/download path. Used
+    /// for on-device conformance (real Swift Runner executes a real `.aimodel`) and
+    /// air-gapped deployments where the bundle is already present on disk.
+    public init(
+        modelID: String,
+        bundleAt url: URL,
+        computeUnits: GraphModel.ComputeUnits = .gpu
+    ) async throws {
+        self.modelID = modelID
+        self.detector = try await ObjectDetector(bundleAt: url, computeUnits: computeUnits)
+    }
+
     public func predict(_ input: AdapterInput) async throws -> AdapterOutput {
         let startTime = Date()
 
