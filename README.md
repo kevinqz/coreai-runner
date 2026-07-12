@@ -9,7 +9,12 @@ adapters). **Truthful capabilities:** `supports.action` is **false** (action inf
 returns HTTP 501 pending the action adapter) and `supports.host_loop` is **false** (no
 host-loop conformance case runs yet); protocol version is explicit (`coreai-runner.v2`).
 Building requires an **Xcode with the macOS 27 SDK** (`CoreAI.framework` ships with macOS
-27); Xcode's macOS 26.5 SDK cannot compile `import CoreAI`.
+27); Xcode's macOS 26.5 SDK cannot compile `import CoreAI`. **Verified** on macOS 27.0
+(Xcode 27.0 beta, SDK 27.0) / Apple M4 Max: `swift build -c release` and `swift test`
+(16/16) pass, and the live `GET /v1/capabilities` validates against the coreai-interop
+`runner-capabilities.v2` schema and the lerobot-coreai `RunnerClient` consumer. GitHub
+Actions runners currently max out at the macOS 26.5 SDK, so CI cannot yet reproduce this
+build (the `build.yml` step is `continue-on-error` until macOS 27 runners are available).
 
 ## What is this?
 
