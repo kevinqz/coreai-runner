@@ -151,10 +151,21 @@ import Foundation
     let decoded = try JSONDecoder().decode(CapabilitiesResponse.self, from: encoded)
 
     #expect(decoded.runtime == "coreai-runner")
+    #expect(decoded.protocolVersion == "coreai-runner.v2")   // RFC-0400 §3.4
     #expect(decoded.supports.llm == true)
-    #expect(decoded.supports.action == true)
-    #expect(decoded.supports.hostLoop == true)
+    // RFC-0400 §3.1/§3.2: action inference returns 501 and no host-loop conformance
+    // case runs yet, so both advertise false — truthful capabilities.
+    #expect(decoded.supports.action == false)
+    #expect(decoded.supports.hostLoop == false)
     #expect(decoded.supports.prefixCache == true)
+    // RFC-0400 §3.3: the v2 envelope REQUIRES action_batching + inference_state.
+    // action=false ⇒ batching unsupported; inference is stateless (interop split profile).
+    #expect(decoded.actionBatching.supported == false)
+    #expect(decoded.actionBatching.semantics == "split_and_stack")
+    #expect(decoded.actionBatching.slotIsolation == "independent")
+    #expect(decoded.inferenceState.scope == "stateless")
+    #expect(decoded.inferenceState.supportsSessionIds == false)
+    #expect(decoded.inferenceState.resetScope == "none")
 }
 
 @Test func modelStatusResponseWithCompilation() async throws {
