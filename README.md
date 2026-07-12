@@ -4,7 +4,12 @@
 > inference over HTTP on a Unix domain socket. The shared runtime engine
 > for all Core AI consumers.
 
-**Status:** Architecture phase.
+**Status:** Implemented Swift runtime/service (UDS HTTP, Catalog client, cache, LLM/vision
+adapters). **Truthful capabilities:** `supports.action` is **false** (action inference
+returns HTTP 501 pending the action adapter) and `supports.host_loop` is **false** (no
+host-loop conformance case runs yet); protocol version is explicit (`coreai-runner.v2`).
+Building requires an **Xcode with the macOS 27 SDK** (`CoreAI.framework` ships with macOS
+27); Xcode's macOS 26.5 SDK cannot compile `import CoreAI`.
 
 ## What is this?
 

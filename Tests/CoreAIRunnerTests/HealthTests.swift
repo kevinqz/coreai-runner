@@ -151,9 +151,12 @@ import Foundation
     let decoded = try JSONDecoder().decode(CapabilitiesResponse.self, from: encoded)
 
     #expect(decoded.runtime == "coreai-runner")
+    #expect(decoded.protocolVersion == "coreai-runner.v2")   // RFC-0400 §3.4
     #expect(decoded.supports.llm == true)
-    #expect(decoded.supports.action == true)
-    #expect(decoded.supports.hostLoop == true)
+    // RFC-0400 §3.1/§3.2: action inference returns 501 and no host-loop conformance
+    // case runs yet, so both advertise false — truthful capabilities.
+    #expect(decoded.supports.action == false)
+    #expect(decoded.supports.hostLoop == false)
     #expect(decoded.supports.prefixCache == true)
 }
 

@@ -344,16 +344,29 @@ public struct ModelStatusResponse: ResponseCodable, Sendable {
 /// discover features without guessing.
 public struct CapabilitiesResponse: ResponseCodable, Sendable {
     public let runtime: String = "coreai-runner"
+    /// Explicit protocol version (RFC-0400 §3.4 / coreai-interop). Clients negotiate on
+    /// this, not on the absence of a field.
+    public let protocolVersion: String = "coreai-runner.v2"
     public let supports: Supports
 
     public struct Supports: Codable, Sendable {
         public let llm: Bool = true
         public let vlm: Bool = true
-        public let action: Bool = true       // robot policies (lerobot-coreai integration)
+        // RFC-0400 §3.1: action inference returns 501, so `action` MUST advertise false
+        // until a real ActionAdapter + host loop lands (lerobot-coreai v0.2 scope).
+        public let action: Bool = false
         public let rewardModel: Bool = false // future
         public let multiGraph: Bool = true   // split policies (encode + denoise_step)
-        public let hostLoop: Bool = true     // flow-matching / diffusion sampling
+        // RFC-0400 §3.2: no conformance case executes a host loop yet, so `host_loop`
+        // MUST advertise false until one does.
+        public let hostLoop: Bool = false
         public let prefixCache: Bool = true  // KV reuse for multi-turn chat
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case runtime
+        case protocolVersion = "protocol_version"
+        case supports
     }
 
     public init() {
