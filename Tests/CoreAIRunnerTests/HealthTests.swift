@@ -158,6 +158,14 @@ import Foundation
     #expect(decoded.supports.action == false)
     #expect(decoded.supports.hostLoop == false)
     #expect(decoded.supports.prefixCache == true)
+    // RFC-0400 §3.3: the v2 envelope REQUIRES action_batching + inference_state.
+    // action=false ⇒ batching unsupported; inference is stateless (interop split profile).
+    #expect(decoded.actionBatching.supported == false)
+    #expect(decoded.actionBatching.semantics == "split_and_stack")
+    #expect(decoded.actionBatching.slotIsolation == "independent")
+    #expect(decoded.inferenceState.scope == "stateless")
+    #expect(decoded.inferenceState.supportsSessionIds == false)
+    #expect(decoded.inferenceState.resetScope == "none")
 }
 
 @Test func modelStatusResponseWithCompilation() async throws {

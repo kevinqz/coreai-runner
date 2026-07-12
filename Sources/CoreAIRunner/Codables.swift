@@ -348,6 +348,13 @@ public struct CapabilitiesResponse: ResponseCodable, Sendable {
     /// this, not on the absence of a field.
     public let protocolVersion: String = "coreai-runner.v2"
     public let supports: Supports
+    /// RFC-0400 §3.3 / coreai-interop runner-capabilities.v2: the v2 envelope REQUIRES
+    /// `action_batching` and `inference_state`. Values mirror the interop `split` profile
+    /// (fixtures/valid/runner-capabilities.split.json) — the truthful shape for this runner:
+    /// action inference is unsupported (action=false), policies are split/multi-graph, and
+    /// inference is stateless (prefix cache is a transparent optimization, not session state).
+    public let actionBatching = ActionBatching()
+    public let inferenceState = InferenceState()
 
     public struct Supports: Codable, Sendable {
         public let llm: Bool = true
@@ -363,10 +370,39 @@ public struct CapabilitiesResponse: ResponseCodable, Sendable {
         public let prefixCache: Bool = true  // KV reuse for multi-turn chat
     }
 
+    public struct ActionBatching: Codable, Sendable {
+        // action=false ⇒ no action batching. `split_and_stack` documents the intended mode
+        // when an ActionAdapter lands; `independent` = per-slot isolation.
+        public let supported: Bool = false
+        public let semantics: String = "split_and_stack"
+        public let slotIsolation: String = "independent"
+
+        enum CodingKeys: String, CodingKey {
+            case supported, semantics
+            case slotIsolation = "slot_isolation"
+        }
+    }
+
+    public struct InferenceState: Codable, Sendable {
+        // Stateless per request; the prefix cache is a transparent KV optimization, not
+        // durable session state, so no session ids and nothing to reset.
+        public let scope: String = "stateless"
+        public let supportsSessionIds: Bool = false
+        public let resetScope: String = "none"
+
+        enum CodingKeys: String, CodingKey {
+            case scope
+            case supportsSessionIds = "supports_session_ids"
+            case resetScope = "reset_scope"
+        }
+    }
+
     enum CodingKeys: String, CodingKey {
         case runtime
         case protocolVersion = "protocol_version"
         case supports
+        case actionBatching = "action_batching"
+        case inferenceState = "inference_state"
     }
 
     public init() {
